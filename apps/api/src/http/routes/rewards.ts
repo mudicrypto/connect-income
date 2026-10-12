@@ -10,6 +10,7 @@ import {
   updatePool,
 } from "../../rewards/pools.js";
 import { calculateRunTx, cancelRun, getRun, listRuns, postRun } from "../../rewards/runs.js";
+import { poolSettlementView, setPeriodMode, settlePoolReservesTx, switchToInvestmentModel } from "../../rewards/settlement.js";
 import { requireAdmin, type AppDeps } from "../app.js";
 
 /** Admin-only reward pool and reward run controls. All SIMULATED. */
@@ -31,6 +32,35 @@ export const rewardAdminRoutes =
     app.patch("/pools/:id", async (req) => {
       const admin = requireAdmin(req);
       await updatePool(db, admin.id, (req.params as { id: string }).id, req.body, req.ip);
+      return { simulated: true, pools: await listPools(db) };
+    });
+
+    app.get("/pools/:id/settlement", async (req) => poolSettlementView(db, (req.params as { id: string }).id));
+
+    // Final reserve settlement is a financial operation: explicit approval + Idempotency-Key.
+    app.post("/pools/:id/settle-reserves", async (req, reply) => {
+      const admin = requireAdmin(req);
+      const key = validateIdempotencyKey(req.headers["idempotency-key"]);
+      const id = (req.params as { id: string }).id;
+      const result = await withTransaction(db, (tx) =>
+        runIdempotent(tx, { userId: admin.id, key, operation: "reserve_settlement", request: { poolId: id } }, async () => ({
+          statusCode: 200,
+          body: await settlePoolReservesTx(tx, admin.id, id, req.ip),
+        })),
+      );
+      reply.header("Idempotent-Replayed", String(result.replayed));
+      return reply.status(result.statusCode).send(result.body);
+    });
+
+    app.post("/pools/:id/switch-loss-model", async (req) => {
+      const admin = requireAdmin(req);
+      await switchToInvestmentModel(db, admin.id, (req.params as { id: string }).id, req.ip);
+      return { simulated: true, pools: await listPools(db) };
+    });
+
+    app.post("/pools/:id/period-mode", async (req) => {
+      const admin = requireAdmin(req);
+      await setPeriodMode(db, admin.id, (req.params as { id: string }).id, (req.body as { periodMode?: unknown } | undefined)?.periodMode, req.ip);
       return { simulated: true, pools: await listPools(db) };
     });
 

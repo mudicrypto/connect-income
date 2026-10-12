@@ -1,6 +1,6 @@
 # Connect Income
 
-A crypto-finance **simulation** platform. Users can make simulated USDT deposits, open fixed-term investments and review an auditable double-entry ledger. Admins can run a **simulated strategy engine**: paper trading, staking and lending strategies on synthetic market data, with risk controls and per-strategy P&L in the ledger. Customer investments can participate in simulated strategy pools and receive **variable, never-guaranteed simulated rewards** paid only from realised pool profit (milestone 3). Later milestones add a native token and an exchange.
+A crypto-finance **simulation** platform. Users can make simulated USDT deposits, open fixed-term investments and review an auditable double-entry ledger. Admins can run a **simulated strategy engine**: paper trading, staking and lending strategies on synthetic market data, with risk controls and per-strategy P&L in the ledger. Customer investments can participate in simulated strategy pools and receive **variable, never-guaranteed simulated rewards** paid only from realised pool profit. Each investment only ever recovers its *own* losses (per-investment high-water mark). Rewards are calculated per closed UTC day and posted only on admin approval. Later milestones add a native token and an exchange.
 
 > ⚠️ Everything is simulated. There are no real funds, wallets, exchanges or blockchain connections. No returns are promised.
 
@@ -56,9 +56,10 @@ npm run dev
 8. **Rewards (milestone 3).** FT-30D and the 5-minute dev product participate in pool `MOMO-BTC`. FT-90D participates in `STAKE-ETH`. FT-180D is principal-only.
    1. As a user, invest in FT-30D. The invest page shows the pool and the variable-reward disclosure.
    2. As admin, go to Strategies (sim), then **Advance synthetic market & run engine** so the pool trades.
-   3. Then go to **Rewards (sim)** and click **Calculate period ending now**. Review the run (every figure, recipient and source trade), then **Post run to ledger** or **Cancel run**.
-   4. As the user, the dashboard shows **Rewards pending**. On **Investments**, click **Statement** for the per-period breakdown. Rewards move to *Available* when the investment matures; with the 5-minute dev product that's within minutes.
-   5. Many periods pay **nothing**. That happens whenever the pool made a loss, only had unrealised gains, or is still recovering earlier losses. This is intended.
+   3. Then go to **Rewards (sim)** and click **Calculate next period**. New pools use **daily UTC periods**, so a day can be calculated only after it has closed. For an instant demo, switch the pool to ad hoc periods in *Pool lifecycle*. Review the run (every figure; each recipient's share, loss recovery and reserve; source trades), then **Post run to ledger** or **Cancel run**.
+   4. After investments mature and every period they took part in is posted, use **Settle matured investment(s)** in *Pool lifecycle*. Each investment's owned reserve is returned and any unrecovered loss expires. Closing a pool never releases anything by itself.
+   5. As the user, the dashboard shows **Rewards pending**. On **Investments**, click **Statement** for the per-period breakdown. Rewards move to *Available* when the investment matures; with the 5-minute dev product that's within minutes.
+   6. Many periods pay **nothing**. That happens whenever the pool made a loss, only had unrealised gains, or is still recovering earlier losses. This is intended.
 
 ## Test
 
@@ -121,7 +122,11 @@ CLAUDE.md    engineering rules and key decisions
 | POST | `/api/admin/rewards/product-assignments` `{productId, poolStrategyId\|null}` | admin |
 | POST | `/api/admin/rewards/policies` `{name, reserveRatio}` | admin: new immutable policy version |
 | GET/POST | `/api/admin/rewards/runs` `{poolStrategyId, periodEnd?}` | admin; POST requires `Idempotency-Key`; `periodEnd` defaults to the server clock; calculates only, no ledger writes |
-| GET | `/api/admin/rewards/runs/:id` | admin: figures, recipients, source trades |
+| GET | `/api/admin/rewards/runs/:id` | admin: figures, recipients (with per-investment loss recovery and reserve), source trades |
+| GET | `/api/admin/rewards/pools/:id/settlement` | admin: per-investment reserve and settlement states, pool state |
+| POST | `/api/admin/rewards/pools/:id/settle-reserves` | admin; requires `Idempotency-Key`; final settlement of matured investments |
+| POST | `/api/admin/rewards/pools/:id/switch-loss-model` | admin; legacy → per-investment, only if legacy balances are zero |
+| POST | `/api/admin/rewards/pools/:id/period-mode` `{periodMode}` | admin; `daily_utc` or `ad_hoc` |
 | POST | `/api/admin/rewards/runs/:id/post` · `/cancel` | admin |
 
 Amounts are always decimal **strings** (e.g. `"100.50"`).
@@ -154,13 +159,15 @@ Amounts are always decimal **strings** (e.g. `"100.50"`).
 - [x] Admin rewards console; user reward visibility; all labelled simulated
 - [x] 93 tests at the end of milestone 3 (23 new in milestone 3)
 - [x] **Milestone 3 audit** (`docs/milestone-3-audit.md`): 8 defects fixed, with regression tests, DB guards and a SQL lint; 112 tests in total
+- [x] **Milestone 3.5, economic-model refinement** (`docs/rewards-accounting-v2.md`): per-investment loss recovery, daily UTC periods, reserve ownership and approved final settlement, legacy pools preserved; 17 new tests (129 total)
 
 ### Next
 - [ ] AI-agent strategy type (plugs into the pure decision-rule interface)
 - [ ] Strategy capital withdrawal, limit editing, force-reduce on limit drift, separate engine worker and DB role
-- [ ] Decide reserve policy at pool closure; optional performance fee (new policy version + fee-revenue account)
+- [ ] Founder decision: transition of legacy pools with pool-level balances (option A / B / C in rewards-accounting-v2.md §7)
+- [ ] Optional performance fee (new policy version + fee-revenue account)
 - [ ] Principal-at-risk model (actually deploying principal into pools), if the founder wants it, with its own design
-- [ ] Scheduled reward runs (e.g. daily) with admin approval
+- [ ] Batch approval for backlogs of closed days (each day is still reviewed); calculation-only scheduler (never posts)
 - [ ] Admin console: product management, ledger explorer, audit log viewer
 - [ ] Risk management limits and kill switches
 - [ ] Native token (internal ledger asset) and treasury

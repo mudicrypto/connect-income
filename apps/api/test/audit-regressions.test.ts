@@ -38,7 +38,8 @@ async function pool(o: { capacity?: string; limits?: Record<string, string>; ter
     params: MOMENTUM_1,
     limits: o.limits,
   });
-  await registerPool(db, adminId, { strategyId, customerCapacity: o.capacity ?? "10000" });
+  // Model-independent regressions; run on the default investment_v2 model with ad hoc periods.
+  await registerPool(db, adminId, { strategyId, customerCapacity: o.capacity ?? "10000", periodMode: "ad_hoc" });
   const productId = await createTestProduct(db, { termMinutes: o.termMinutes ?? 30 * 1440 });
   await assignProductToPool(db, adminId, { productId, poolStrategyId: strategyId });
   return { inst, strategyId, productId };

@@ -3,14 +3,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { checkLedgerIntegrity } from "../src/ledger/integrity.js";
 import { Money } from "../src/lib/money.js";
 import { appendScriptedTicks } from "../src/market/market.js";
-import { assignProductToPool, registerPool } from "../src/rewards/pools.js";
+import { assignProductToPool } from "../src/rewards/pools.js";
 import { calculateRun, cancelRun, postRun } from "../src/rewards/runs.js";
 import { getUserBalances } from "../src/services/accounts.js";
 import { createInvestment, settleMaturedInvestments } from "../src/services/investments.js";
 import { runEngine } from "../src/strategy/engine.js";
 import { pauseStrategy, resumeStrategy } from "../src/strategy/strategies.js";
 import { createTestProduct, createTestUser, fund, key, makeApp, sessionCookie, testDb } from "./helpers.js";
-import { MOMENTUM_1, makeStrategy, scriptedInstrument } from "./strategy-helpers.js";
+import { MOMENTUM_1, makeStrategy, registerLegacyV1Pool, scriptedInstrument } from "./strategy-helpers.js";
 
 const db = testDb();
 let adminId: string;
@@ -43,7 +43,9 @@ async function setupPool(o: { capital?: string; capacity?: string; params?: Reco
     capital: o.capital ?? "10000",
     params: o.params ?? MOMENTUM_1,
   });
-  await registerPool(db, adminId, { strategyId, customerCapacity: o.capacity ?? "5000" });
+  // These tests pin down the milestone-3 (pool_v1) formulas, which still apply to legacy pools.
+  // The per-investment model (investment_v2) is covered by rewards-v2-flow.test.ts.
+  await registerLegacyV1Pool(db, adminId, strategyId, o.capacity ?? "5000");
   const productId = await createTestProduct(db, { termMinutes: o.termMinutes ?? 30 * 1440 });
   await assignProductToPool(db, adminId, { productId, poolStrategyId: strategyId, reason: "test" });
   return { inst, strategyId, productId };

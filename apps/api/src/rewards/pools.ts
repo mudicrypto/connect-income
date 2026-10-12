@@ -15,7 +15,15 @@ const uuid = z.string().regex(/^[0-9a-f-]{36}$/i, "must be a UUID");
 const amount = z.string().regex(/^\d{1,20}(\.\d{1,6})?$/, "must be a decimal string");
 
 export async function registerPool(db: Db, actorUserId: string, raw: unknown, ip?: string | null) {
-  const input = z.object({ strategyId: uuid, customerCapacity: amount }).strict().parse(raw);
+  const input = z
+    .object({
+      strategyId: uuid,
+      customerCapacity: amount,
+      // Daily UTC accounting periods by default; "ad_hoc" lets the admin choose each period end.
+      periodMode: z.enum(["daily_utc", "ad_hoc"]).default("daily_utc"),
+    })
+    .strict()
+    .parse(raw);
   if (new Money(input.customerCapacity).lte(0)) throw unprocessable("invalid_capacity", "customerCapacity must be > 0");
   return withTransaction(db, async (tx) => {
     const s = await tx.query<{ id: string; quote_asset: string }>(
@@ -24,9 +32,9 @@ export async function registerPool(db: Db, actorUserId: string, raw: unknown, ip
     );
     if (!s.rows[0]) throw notFound("Strategy not found");
     const res = await tx.query(
-      `INSERT INTO reward_pools (strategy_id, customer_capacity, created_by) VALUES ($1, $2, $3)
+      `INSERT INTO reward_pools (strategy_id, customer_capacity, created_by, period_mode, loss_model) VALUES ($1, $2, $3, $4, 'investment_v2')
        ON CONFLICT (strategy_id) DO NOTHING RETURNING strategy_id`,
-      [input.strategyId, input.customerCapacity, actorUserId],
+      [input.strategyId, input.customerCapacity, actorUserId, input.periodMode],
     );
     if (!res.rowCount) throw conflict("pool_exists", "This strategy is already a reward pool");
     await ensureStrategyAccounts(tx, input.strategyId, s.rows[0].quote_asset);
@@ -36,7 +44,7 @@ export async function registerPool(db: Db, actorUserId: string, raw: unknown, ip
       action: "pool.register",
       targetType: "strategy",
       targetId: input.strategyId,
-      details: { customerCapacity: input.customerCapacity },
+      details: { customerCapacity: input.customerCapacity, periodMode: input.periodMode, lossModel: "investment_v2" },
       ip,
     });
   });
@@ -221,6 +229,7 @@ export async function allocateInvestmentToPool(
 export async function listPools(db: Db) {
   const { rows } = await db.query(`
     SELECT rp.strategy_id AS id, s.code, s.name, s.status AS "strategyStatus", rp.status, rp.customer_capacity::text AS "customerCapacity",
+           rp.loss_model AS "lossModel", rp.transition_required AS "transitionRequired", rp.period_mode AS "periodMode",
            rp.rewards_start_at AS "rewardsStartAt",
            COALESCE((SELECT sum(balance) FROM ledger_accounts WHERE owner_strategy_id = rp.strategy_id AND purpose = 'strategy_capital'), 0)::text AS "paperCapital",
            COALESCE((SELECT sum(balance) FROM ledger_accounts WHERE owner_strategy_id = rp.strategy_id AND purpose = 'pool_reserve'), 0)::text AS "reserve",
@@ -236,7 +245,21 @@ export async function listPools(db: Db) {
              WHERE (SELECT pool_strategy_id FROM product_pool_assignments a WHERE a.product_id = p.id ORDER BY a.id DESC LIMIT 1) = rp.strategy_id) AS products
       FROM reward_pools rp JOIN strategies s ON s.id = rp.strategy_id
      ORDER BY s.code`);
-  return rows.map((r) => ({ ...r, simulated: true, products: r.products ?? [] }));
+  const { nextPeriod, poolSettlementView } = await import("./settlement.js");
+  return Promise.all(
+    rows.map(async (r) => {
+      const view = await poolSettlementView(db, r.id);
+      return {
+        ...r,
+        simulated: true,
+        products: r.products ?? [],
+        nextPeriod: await nextPeriod(db, r.id),
+        poolState: view.poolState,
+        settleableCount: view.allocations.filter((a) => a.state === "settleable").length,
+        unsettledCount: view.allocations.filter((a) => a.state !== "settled").length,
+      };
+    }),
+  );
 }
 
 /** Current pool (if any) per product, for product listings. */

@@ -77,3 +77,22 @@ export async function strategyAccountBalances(db: Db, strategyId: string): Promi
   );
   return Object.fromEntries(rows.map((r) => [r.purpose, new Money(r.balance).toFixed()]));
 }
+
+/**
+ * LEGACY FIXTURE: a pool on the milestone-3 pool-wide loss model (pool_v1) with ad hoc
+ * periods. Production never creates these any more (new pools are investment_v2); they
+ * exist only for pools migrated with legacy balances, so their v1 behaviour stays tested.
+ */
+export async function registerLegacyV1Pool(db: Db, adminId: string, strategyId: string, customerCapacity: string) {
+  await db.query(
+    `INSERT INTO reward_pools (strategy_id, customer_capacity, created_by, period_mode, loss_model)
+     VALUES ($1, $2, $3, 'ad_hoc', 'pool_v1')`,
+    [strategyId, customerCapacity, adminId],
+  );
+  const { ensureAccount, ensureStrategyAccounts } = await import("../src/ledger/accounts.js");
+  const { withTransaction } = await import("../src/db/pool.js");
+  await withTransaction(db, async (tx) => {
+    await ensureStrategyAccounts(tx, strategyId, "USDT");
+    await ensureAccount(tx, "pool_reserve", "USDT", { strategyId });
+  });
+}

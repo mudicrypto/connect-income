@@ -161,3 +161,124 @@ export function capitalIntegral(
   }
   return total.plus(level.times(endUs.minus(cursor)));
 }
+
+// ---------------------------------------------------------------------------
+// v2: per-investment loss recovery and reserve (docs/rewards-accounting-v2.md §3)
+// ---------------------------------------------------------------------------
+
+export interface CalcAllocationV2 extends CalcAllocation {
+  /** Opening loss-recovery balance L⁰ (from the allocation's latest posted v2 line). */
+  lossOpen: MoneyT;
+  /** Opening reserve owned by this allocation V⁰. */
+  reserveOpen: MoneyT;
+}
+
+export interface CalcInputV2 {
+  trades: Array<{ realisedPnl: MoneyT; fee: MoneyT }>;
+  capitalIntegral: MoneyT;
+  allocations: CalcAllocationV2[];
+  reserveRatio: MoneyT;
+  scale: number;
+}
+
+export interface CalcLineV2 extends CalcLine {
+  lossOpen: MoneyT;
+  attributable: MoneyT;
+  lossRecovered: MoneyT;
+  lossClose: MoneyT;
+  reserveOpen: MoneyT;
+  reserveApplied: MoneyT;
+  eligible: MoneyT;
+  reserveContribution: MoneyT;
+  reserveClose: MoneyT;
+}
+
+export interface CalcResultV2 extends Omit<CalcResult, "lines"> {
+  attributionResidual: MoneyT;
+  lines: CalcLineV2[];
+}
+
+export function calculateRewardsV2(input: CalcInputV2): CalcResultV2 {
+  const q = input.scale;
+  if (input.reserveRatio.lt(0) || input.reserveRatio.gte(1)) throw new Error("reserve ratio must be in [0, 1)");
+  let grossGains = ZERO;
+  let grossLosses = ZERO;
+  let fees = ZERO;
+  for (const t of input.trades) {
+    if (t.realisedPnl.gt(0)) grossGains = grossGains.plus(t.realisedPnl);
+    else grossLosses = grossLosses.plus(t.realisedPnl.abs());
+    fees = fees.plus(t.fee);
+  }
+  const netRealised = grossGains.minus(grossLosses).minus(fees);
+  const C = input.capitalIntegral;
+
+  const participating = input.allocations.filter((a) => a.overlapUs.gt(0));
+  const allocationIntegral = participating.reduce<MoneyT>((s, a) => s.plus(a.amount.times(a.overlapUs)), ZERO);
+
+  const lines: CalcLineV2[] = participating.map((a) => {
+    if (a.lossOpen.lt(0) || a.reserveOpen.lt(0)) throw new Error("opening loss and reserve balances cannot be negative");
+    const weighted = a.amount.times(a.overlapUs);
+    // 1. Attribution, rounded toward -infinity (never favours payout).
+    const n = C.gt(0) ? floorTo(netRealised.times(weighted).div(C), q) : ZERO;
+    let lossRecovered = ZERO;
+    let reserveApplied = ZERO;
+    let eligible = ZERO;
+    let lossClose: MoneyT;
+    if (n.lte(0)) {
+      // 2. Loss: this investment's own reserve absorbs first, the rest is its own loss balance.
+      reserveApplied = Money.min(a.reserveOpen, n.neg());
+      lossClose = a.lossOpen.plus(n.neg()).minus(reserveApplied);
+    } else {
+      // 3. Profit: recover this investment's own earlier losses before anything is eligible.
+      lossRecovered = Money.min(n, a.lossOpen);
+      lossClose = a.lossOpen.minus(lossRecovered);
+      eligible = n.minus(lossRecovered);
+    }
+    // 4.-5. Reserve contribution (rounded up, capped) and reward.
+    const reserveContribution = Money.min(eligible, ceilTo(eligible.times(input.reserveRatio), q));
+    return {
+      ...a,
+      weightedAllocation: weighted,
+      weightFraction: allocationIntegral.gt(0) ? weighted.div(allocationIntegral).toDecimalPlaces(18, Decimal.ROUND_DOWN) : ZERO,
+      attributable: n,
+      lossRecovered,
+      lossClose,
+      reserveApplied,
+      eligible,
+      reserveContribution,
+      reserveClose: a.reserveOpen.plus(reserveContribution).minus(reserveApplied),
+      reward: eligible.minus(reserveContribution),
+    };
+  });
+
+  const sum = (f: (l: CalcLineV2) => MoneyT) => lines.reduce<MoneyT>((s, l) => s.plus(f(l)), ZERO);
+  let ratio = C.gt(0) ? allocationIntegral.div(C) : ZERO;
+  if (ratio.gt(1)) ratio = new Money(1);
+  const attributable = sum((l) => l.attributable);
+  const exactCustomerShare = C.gt(0) ? netRealised.times(allocationIntegral).div(C) : ZERO;
+  const totalRewards = sum((l) => l.reward);
+  return {
+    sourceTradeCount: input.trades.length,
+    grossGains,
+    grossLosses,
+    fees,
+    netRealised,
+    capitalIntegral: C,
+    allocationIntegral,
+    customerFraction: ratio.toDecimalPlaces(18, Decimal.ROUND_DOWN),
+    attributable,
+    cfOpen: sum((l) => l.lossOpen),
+    cfRecovered: sum((l) => l.lossRecovered),
+    cfClose: sum((l) => l.lossClose),
+    reserveOpen: sum((l) => l.reserveOpen),
+    reserveApplied: sum((l) => l.reserveApplied),
+    eligibleProfit: sum((l) => l.eligible),
+    reserveContribution: sum((l) => l.reserveContribution),
+    roundingResidual: ZERO,
+    distributable: totalRewards,
+    totalRewards,
+    // Profit attribution remainder kept by the pool (never customer money); 0 for losses.
+    attributionResidual: netRealised.gt(0) ? exactCustomerShare.minus(attributable).toDecimalPlaces(18, Decimal.ROUND_DOWN) : ZERO,
+    lines,
+  };
+}

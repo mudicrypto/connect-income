@@ -66,7 +66,7 @@
 
 ## Rewards (milestone 3)
 
-The full specification is in [`rewards-accounting.md`](rewards-accounting.md). In short:
+The full specification is in [`rewards-accounting.md`](rewards-accounting.md), as revised by [`rewards-accounting-v2.md`](rewards-accounting-v2.md). v2 covers per-investment loss recovery, daily UTC periods and reserve settlement. In short:
 - Investments in pool-backed products get an immutable allocation, a *simulated* participation record. Principal is never moved.
 - An admin calculates a run for a closed period. The calculation reads realised trades, the paper-capital timeline and the allocations, and writes the run and its lines, but no ledger entries.
 - Posting recomputes and reconciles first, then checks pool cash. Only then does it write one two-sided `reward_distribution` entry and, after a loss, a `reward_reserve_release` entry.

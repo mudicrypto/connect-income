@@ -204,7 +204,15 @@ export interface RewardStatement {
     weightFraction: string;
     reward: string;
     releasedAt: string | null;
+    lossModel: "pool_v1" | "investment_v2";
+    yourShareOfPoolResult: string | null;
+    lossRecovered: string | null;
+    yourLossToRecover: string | null;
+    reserveWithheld: string | null;
+    reserveApplied: string | null;
+    yourReserve: string | null;
   }>;
+  settlement: { reserveReturned: string; lossExpired: string; settledAt: string } | null;
 }
 export interface RewardPool {
   id: string;
@@ -222,6 +230,33 @@ export interface RewardPool {
   lastPeriodEnd: string | null;
   rewardsStartAt: string;
   products: Array<{ id: string; code: string; name: string }>;
+  lossModel: "pool_v1" | "investment_v2";
+  transitionRequired: boolean;
+  periodMode: "daily_utc" | "ad_hoc";
+  nextPeriod: { mode: string; start: string; end: string | null; closed: boolean | null };
+  poolState: "open" | "closed_settling" | "closed_settled";
+  settleableCount: number;
+  unsettledCount: number;
+}
+export interface PoolSettlementView {
+  poolState: string;
+  lossModel: string;
+  reserveBalance: string;
+  legacyReserve: string;
+  allocations: Array<{
+    allocationId: string;
+    investmentId: string;
+    userEmail: string;
+    effectiveTo: string;
+    investmentStatus: string;
+    reserveHeld: string | null;
+    lossBalance: string | null;
+    unreleasedRewards: string;
+    state: "participating" | "settleable" | "blocked" | "settled";
+    reason: string | null;
+    settledReserve: string | null;
+    settledLossExpired: string | null;
+  }>;
 }
 export interface RewardPolicy {
   id: string;
@@ -261,9 +296,26 @@ export interface RewardRun {
   error: string | null;
   createdAt: string;
   postedAt: string | null;
+  lossModel: "pool_v1" | "investment_v2";
+  attributionResidual: string;
 }
 export interface RewardRunDetail {
   run: RewardRun;
-  lines: Array<{ id: string; investmentId: string; userEmail: string; allocationAmount: string; weightFraction: string; reward: string; releasedAt: string | null }>;
+  lines: Array<{
+    id: string;
+    investmentId: string;
+    userEmail: string;
+    allocationAmount: string;
+    weightFraction: string;
+    reward: string;
+    releasedAt: string | null;
+    attributable: string | null;
+    lossOpen: string | null;
+    lossRecovered: string | null;
+    lossClose: string | null;
+    reserveApplied: string | null;
+    reserveContribution: string | null;
+    reserveClose: string | null;
+  }>;
   sources: Array<{ id: string; tickSeq: string; side: string; realisedPnl: string; fee: string; entryId: string }>;
 }

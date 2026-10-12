@@ -1,5 +1,9 @@
 # Rewards accounting (Milestone 3)
 
+> **Since milestone 3.5 this document governs only legacy `pool_v1` pools.** All new pools use
+> the per-investment model, daily UTC periods and reserve settlement in
+> [`rewards-accounting-v2.md`](rewards-accounting-v2.md).
+
 > **Everything here is SIMULATED.** Strategy pools trade synthetic market data with simulated
 > paper capital. Customer "allocations" are simulated participation records; no customer
 > deposit (all of which are simulated USDT anyway) is invested anywhere. Rewards are

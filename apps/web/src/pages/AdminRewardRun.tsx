@@ -35,16 +35,19 @@ export function AdminRewardRunPage() {
     ["Fees", `−${fmt(r.fees, 6)}`],
     ["Net realised P&L (pool)", fmt(r.netRealised, 6), "R = G − L − F"],
     ["Customer participation", pct(r.customerFraction, 4), "time-weighted allocations ÷ paper capital"],
-    ["Customer-attributable result", fmt(r.attributable, 6), "⌊R × φ⌋"],
-    ["Loss carry-forward (open)", fmt(r.cfOpen, 6)],
+    ["Customer-attributable result", fmt(r.attributable, 6), r.lossModel === "investment_v2" ? "Σ ⌊R × Aᵢ / C⌋ per investment" : "⌊R × φ⌋"],
+    [r.lossModel === "investment_v2" ? "Investors' losses to recover (open, Σ)" : "Loss carry-forward (open)", fmt(r.cfOpen, 6)],
     ["Recovered (not paid out)", fmt(r.cfRecovered, 6)],
     ["Reserve (open)", fmt(r.reserveOpen, 6)],
     ["Reserve applied to loss", fmt(r.reserveApplied, 6)],
-    ["Loss carry-forward (close)", fmt(r.cfClose, 6)],
+    [r.lossModel === "investment_v2" ? "Investors' losses to recover (close, Σ)" : "Loss carry-forward (close)", fmt(r.cfClose, 6)],
     ["Eligible profit", fmt(r.eligibleProfit, 6)],
     ["Reserve contribution (incl. rounding residual)", fmt(r.reserveContribution, 6), `residual ${fmt(r.roundingResidual, 6)}`],
     ["Distributable", fmt(r.distributable, 6)],
     ["Total rewards", fmt(r.totalRewards, 6), "≤ distributable"],
+    ...(r.lossModel === "investment_v2"
+      ? ([["Attribution remainder (kept by pool)", fmt(r.attributionResidual, 6), "rounding of per-investment shares"]] as Array<[string, string, string?]>)
+      : []),
   ];
 
   return (
@@ -58,7 +61,8 @@ export function AdminRewardRunPage() {
       <div className="row wrap">
         <RunStatus status={r.status} />
         <span className="muted">
-          Period {fmtDate(r.periodStart)} → {fmtDate(r.periodEnd)} · policy v{r.policyVersion} · run {r.id}
+          Period {fmtDate(r.periodStart)} → {fmtDate(r.periodEnd)} · policy v{r.policyVersion} ·{" "}
+          {r.lossModel === "investment_v2" ? "per-investment loss recovery" : "legacy pool-wide carry-forward"} · run {r.id}
         </span>
       </div>
       {r.error && <div className={r.status === "failed" ? "error" : "warning"}>{r.error}</div>}
@@ -124,6 +128,15 @@ export function AdminRewardRunPage() {
                   <th>Investment</th>
                   <th className="num">Allocation</th>
                   <th className="num">Weight</th>
+                  {r.lossModel === "investment_v2" && (
+                    <>
+                      <th className="num">Share of result</th>
+                      <th className="num">Recovered</th>
+                      <th className="num">Loss to recover</th>
+                      <th className="num">Reserve ±</th>
+                      <th className="num">Reserve owned</th>
+                    </>
+                  )}
                   <th className="num">Reward</th>
                   <th>Released</th>
                 </tr>
@@ -137,6 +150,17 @@ export function AdminRewardRunPage() {
                     </td>
                     <td className="num">{fmt(l.allocationAmount)}</td>
                     <td className="num">{pct(l.weightFraction, 4)}</td>
+                    {r.lossModel === "investment_v2" && (
+                      <>
+                        <td className="num">{fmt(l.attributable ?? "0", 6)}</td>
+                        <td className="num">{fmt(l.lossRecovered ?? "0", 6)}</td>
+                        <td className="num">{fmt(l.lossClose ?? "0", 6)}</td>
+                        <td className="num">
+                          +{fmt(l.reserveContribution ?? "0", 6)} / −{fmt(l.reserveApplied ?? "0", 6)}
+                        </td>
+                        <td className="num">{fmt(l.reserveClose ?? "0", 6)}</td>
+                      </>
+                    )}
                     <td className="num">{fmt(l.reward, 6)}</td>
                     <td>{l.releasedAt ? fmtDate(l.releasedAt) : <span className="muted">at maturity</span>}</td>
                   </tr>

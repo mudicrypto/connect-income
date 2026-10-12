@@ -1,4 +1,5 @@
 import type { Db, Tx } from "../db/pool.js";
+import { Money } from "../lib/money.js";
 
 /** Reward invariants (docs/rewards-accounting.md section 6). */
 export async function rewardIntegrityProblems(db: Db | Tx): Promise<string[]> {
@@ -22,8 +23,49 @@ export async function rewardIntegrityProblems(db: Db | Tx): Promise<string[]> {
   const reserveBad = await db.query<{ pool: string }>(`
     SELECT rp.strategy_id AS pool FROM reward_pools rp
      WHERE COALESCE((SELECT sum(balance) FROM ledger_accounts WHERE owner_strategy_id = rp.strategy_id AND purpose = 'pool_reserve'), 0)
-        <> COALESCE((SELECT sum(reserve_contribution - reserve_applied) FROM reward_runs WHERE pool_strategy_id = rp.strategy_id AND status = 'posted'), 0)`);
-  for (const r of reserveBad.rows) problems.push(`pool ${r.pool}: reserve ledger does not match posted runs`);
+        <> COALESCE((SELECT sum(reserve_contribution - reserve_applied) FROM reward_runs WHERE pool_strategy_id = rp.strategy_id AND status = 'posted'), 0)
+         - COALESCE((SELECT sum(reserve_released) FROM reserve_settlements s WHERE s.pool_strategy_id = rp.strategy_id), 0)`);
+  for (const r of reserveBad.rows) problems.push(`pool ${r.pool}: reserve ledger does not match posted runs minus settlements`);
+
+  // v2 (rewards-accounting-v2.md §4): the pool reserve is exactly the reserves owned by unsettled
+  // investments (their latest posted v2 line) plus any legacy pool_v1 reserve.
+  const ownedBad = await db.query<{ pool: string; ledger: string; owned: string }>(`
+    SELECT rp.strategy_id AS pool,
+           COALESCE((SELECT sum(balance) FROM ledger_accounts WHERE owner_strategy_id = rp.strategy_id AND purpose = 'pool_reserve'), 0)::text AS ledger,
+           (COALESCE((SELECT sum(last.reserve_close) FROM pool_allocations pa
+                       JOIN LATERAL (SELECT l.reserve_close FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
+                                      WHERE l.allocation_id = pa.id AND r.status = 'posted' AND r.loss_model = 'investment_v2'
+                                      ORDER BY r.period_end DESC LIMIT 1) last ON TRUE
+                      WHERE pa.pool_strategy_id = rp.strategy_id
+                        AND NOT EXISTS (SELECT 1 FROM reserve_settlements s WHERE s.allocation_id = pa.id)), 0)
+            + COALESCE((SELECT sum(reserve_contribution - reserve_applied) FROM reward_runs
+                         WHERE pool_strategy_id = rp.strategy_id AND status = 'posted' AND loss_model = 'pool_v1'), 0))::text AS owned
+      FROM reward_pools rp`);
+  for (const r of ownedBad.rows) {
+    if (!new Money(r.ledger).eq(r.owned)) problems.push(`pool ${r.pool}: reserve ledger ${r.ledger} != owned reserves + legacy ${r.owned}`);
+  }
+
+  // v2 per-investment balances must chain: each posted line opens where the previous posted line closed.
+  const chain = await db.query<{ id: string }>(`
+    SELECT x.id::text FROM (
+      SELECT l.id, l.loss_open, l.reserve_open,
+             LAG(l.loss_close) OVER w AS prev_loss, LAG(l.reserve_close) OVER w AS prev_reserve
+        FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
+       WHERE r.status = 'posted' AND r.loss_model = 'investment_v2'
+      WINDOW w AS (PARTITION BY l.allocation_id ORDER BY r.period_end)) x
+     WHERE x.loss_open <> COALESCE(x.prev_loss, 0) OR x.reserve_open <> COALESCE(x.prev_reserve, 0)`);
+  for (const r of chain.rows) problems.push(`v2 reward line ${r.id}: opening balances do not continue the previous posted period`);
+
+  // Settlement records the allocation's final memo balances, and nothing is posted for it afterwards.
+  const settleBad = await db.query<{ id: string }>(`
+    SELECT s.id::text FROM reserve_settlements s
+      LEFT JOIN LATERAL (SELECT l.reserve_close, l.loss_close FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
+                          WHERE l.allocation_id = s.allocation_id AND r.status = 'posted' AND r.loss_model = 'investment_v2'
+                          ORDER BY r.period_end DESC LIMIT 1) last ON TRUE
+     WHERE s.reserve_released <> COALESCE(last.reserve_close, 0) OR s.loss_expired <> COALESCE(last.loss_close, 0)
+        OR EXISTS (SELECT 1 FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
+                    WHERE l.allocation_id = s.allocation_id AND r.status = 'posted' AND r.posted_at > s.created_at)`);
+  for (const r of settleBad.rows) problems.push(`reserve settlement ${r.id} does not match the allocation's final balances`);
 
   const distBad = await db.query<{ code: string }>(`
     SELECT s.code FROM strategies s

@@ -5,7 +5,7 @@ import { format, fromDb, Money } from "../lib/money.js";
 import { ensureAccount, ensureStrategyAccounts, ensureUserAccounts, getAsset, lockAccounts } from "../ledger/accounts.js";
 import { postEntry, type PostingInput } from "../ledger/ledger.js";
 import { audit } from "../services/audit.js";
-import { calculateRewards, capitalIntegral, type CalcResult } from "./calc.js";
+import { calculateRewards, calculateRewardsV2, capitalIntegral, type CalcResult, type CalcResultV2 } from "./calc.js";
 import { currentPolicy } from "./pools.js";
 
 /**
@@ -21,11 +21,30 @@ class RunFailure extends AppError {
 
 const us = (col: string) => `(extract(epoch from ${col}) * 1000000)::numeric(30,0)::text`;
 
+export type LossModel = "pool_v1" | "investment_v2";
+
 interface PoolPeriodInputs {
   tradeIds: string[];
-  result: CalcResult;
+  /** v1 result (pool-wide carry-forward) or v2 result (per-investment loss recovery). */
+  result: CalcResult | CalcResultV2;
   scale: number;
   asset: string;
+}
+
+/**
+ * Opening per-investment balances (loss-recovery L⁰ and owned reserve V⁰) for
+ * allocations, from each allocation's latest POSTED v2 line. v1 lines carry no
+ * memo, so an allocation's v2 history starts at zero (rewards-accounting-v2.md §7).
+ */
+async function openingBalances(tx: Tx, allocationIds: string[]) {
+  const { rows } = await tx.query<{ allocation_id: string; loss_close: string; reserve_close: string }>(
+    `SELECT DISTINCT ON (l.allocation_id) l.allocation_id, l.loss_close::text, l.reserve_close::text
+       FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
+      WHERE l.allocation_id = ANY($1::uuid[]) AND r.status = 'posted' AND r.loss_model = 'investment_v2'
+      ORDER BY l.allocation_id, r.period_end DESC`,
+    [allocationIds],
+  );
+  return new Map(rows.map((r) => [r.allocation_id, { lossOpen: new Money(r.loss_close), reserveOpen: new Money(r.reserve_close) }]));
 }
 
 /** Gather source data for a pool and period and run the pure calculation. */
@@ -36,6 +55,7 @@ async function computePeriod(
   periodEnd: Date,
   reserveRatio: string,
   cfOpen: string,
+  model: LossModel,
 ): Promise<PoolPeriodInputs> {
   const meta = await tx.query<{ quote_asset: string; s_us: string; e_us: string }>(
     `SELECT i.quote_asset, ${us("$2::timestamptz")} AS s_us, ${us("$3::timestamptz")} AS e_us
@@ -87,6 +107,25 @@ async function computePeriod(
     [poolId],
   );
 
+  if (model === "investment_v2") {
+    const opening = await openingBalances(tx, allocs.rows.map((a) => a.id));
+    const resultV2 = calculateRewardsV2({
+      trades: trades.rows.map((t) => ({ realisedPnl: new Money(t.realised_pnl), fee: new Money(t.fee) })),
+      capitalIntegral: capInt,
+      allocations: allocs.rows.map((a) => ({
+        allocationId: a.id,
+        investmentId: a.investment_id,
+        userId: a.user_id,
+        amount: new Money(a.amount),
+        overlapUs: new Money(a.overlap_us),
+        ...(opening.get(a.id) ?? { lossOpen: new Money(0), reserveOpen: new Money(0) }),
+      })),
+      reserveRatio: new Money(reserveRatio),
+      scale: asset.scale,
+    });
+    return { tradeIds: trades.rows.map((t) => t.id), result: resultV2, scale: asset.scale, asset: asset.code };
+  }
+
   const result = calculateRewards({
     trades: trades.rows.map((t) => ({ realisedPnl: new Money(t.realised_pnl), fee: new Money(t.fee) })),
     capitalIntegral: capInt,
@@ -131,8 +170,8 @@ export async function calculateRun(db: Db, actorUserId: string, raw: unknown, ip
 export async function calculateRunTx(tx: Tx, actorUserId: string, raw: unknown, ip?: string | null): Promise<string> {
   const input = calculateSchema.parse(raw);
   {
-    const pool = await tx.query<{ rewards_start_at: Date }>(
-      "SELECT rewards_start_at FROM reward_pools WHERE strategy_id = $1 FOR UPDATE",
+    const pool = await tx.query<{ rewards_start_at: Date; loss_model: LossModel; period_mode: "daily_utc" | "ad_hoc" }>(
+      "SELECT rewards_start_at, loss_model, period_mode FROM reward_pools WHERE strategy_id = $1 FOR UPDATE",
       [input.poolStrategyId],
     );
     if (!pool.rows[0]) throw notFound("Pool not found");
@@ -143,9 +182,22 @@ export async function calculateRunTx(tx: Tx, actorUserId: string, raw: unknown, 
 
     const prev = await lastPosted(tx, input.poolStrategyId);
     const periodStart = prev ? prev.period_end : pool.rows[0].rewards_start_at;
-    const periodEnd = input.periodEnd
-      ? new Date(input.periodEnd)
-      : (await tx.query<{ now: Date }>("SELECT now() AS now")).rows[0]!.now;
+    const model = pool.rows[0].loss_model;
+    let periodEnd: Date;
+    if (pool.rows[0].period_mode === "daily_utc") {
+      // The next period ends at the first UTC midnight after its start (a stub aligns
+      // the first period); one closed UTC day per run after that.
+      periodEnd = (await tx.query<{ end: Date }>("SELECT next_utc_midnight($1) AS end", [periodStart])).rows[0]!.end;
+      if (input.periodEnd && new Date(input.periodEnd).getTime() !== periodEnd.getTime()) {
+        throw badRequest("invalid_period", `This pool uses daily UTC periods; the next period ends at ${periodEnd.toISOString()}`);
+      }
+      const closed = (await tx.query<{ closed: boolean }>("SELECT $1::timestamptz <= now() AS closed", [periodEnd])).rows[0]!.closed;
+      if (!closed) {
+        throw unprocessable("period_not_closed", `The UTC day ending ${periodEnd.toISOString()} has not closed yet; only closed periods are rewarded`);
+      }
+    } else {
+      periodEnd = input.periodEnd ? new Date(input.periodEnd) : (await tx.query<{ now: Date }>("SELECT now() AS now")).rows[0]!.now;
+    }
     const check = await tx.query<{ ok_order: boolean; ok_past: boolean }>(
       "SELECT $2::timestamptz > $1::timestamptz AS ok_order, $2::timestamptz <= now() AS ok_past",
       [periodStart, periodEnd],
@@ -156,15 +208,23 @@ export async function calculateRunTx(tx: Tx, actorUserId: string, raw: unknown, 
     if (!check.rows[0]!.ok_past) throw badRequest("invalid_period", "periodEnd cannot be in the future: only closed periods are rewarded");
 
     const policy = await currentPolicy(tx);
-    const { result, tradeIds } = await computePeriod(tx, input.poolStrategyId, periodStart, periodEnd, policy.reserve_ratio, prev?.cf_close ?? "0");
+    const { result, tradeIds } = await computePeriod(
+      tx,
+      input.poolStrategyId,
+      periodStart,
+      periodEnd,
+      policy.reserve_ratio,
+      prev?.cf_close ?? "0",
+      model,
+    );
     const r = result;
     const { rows } = await tx.query<{ id: string }>(
       `INSERT INTO reward_runs
          (pool_strategy_id, policy_id, policy_version, period_start, period_end, source_trade_count, gross_gains, gross_losses,
           fees, net_realised, capital_integral, allocation_integral, customer_fraction, attributable, cf_open, cf_recovered,
           cf_close, reserve_open, reserve_applied, eligible_profit, reserve_contribution, rounding_residual, distributable,
-          total_rewards, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+          total_rewards, created_by, loss_model, attribution_residual)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
        RETURNING id`,
       [
         input.poolStrategyId,
@@ -192,15 +252,25 @@ export async function calculateRunTx(tx: Tx, actorUserId: string, raw: unknown, 
         r.distributable.toFixed(),
         r.totalRewards.toFixed(),
         actorUserId,
+        model,
+        "attributionResidual" in r ? r.attributionResidual.toFixed() : "0",
       ],
     );
     const runId = rows[0]!.id;
     for (const l of r.lines) {
+      const v2 = "lossOpen" in l ? l : null;
       await tx.query(
         `INSERT INTO reward_run_lines (run_id, allocation_id, investment_id, user_id, allocation_amount, overlap_us,
-           weighted_allocation, weight_fraction, reward)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [runId, l.allocationId, l.investmentId, l.userId, l.amount.toFixed(), l.overlapUs.toFixed(), l.weightedAllocation.toFixed(), l.weightFraction.toFixed(), l.reward.toFixed()],
+           weighted_allocation, weight_fraction, reward, loss_open, attributable, loss_recovered, loss_close, reserve_open,
+           reserve_applied, eligible, reserve_contribution, reserve_close)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+        [
+          runId, l.allocationId, l.investmentId, l.userId, l.amount.toFixed(), l.overlapUs.toFixed(), l.weightedAllocation.toFixed(),
+          l.weightFraction.toFixed(), l.reward.toFixed(),
+          v2?.lossOpen.toFixed() ?? null, v2?.attributable.toFixed() ?? null, v2?.lossRecovered.toFixed() ?? null,
+          v2?.lossClose.toFixed() ?? null, v2?.reserveOpen.toFixed() ?? null, v2?.reserveApplied.toFixed() ?? null,
+          v2?.eligible.toFixed() ?? null, v2?.reserveContribution.toFixed() ?? null, v2?.reserveClose.toFixed() ?? null,
+        ],
       );
     }
     await audit(tx, {
@@ -208,7 +278,7 @@ export async function calculateRunTx(tx: Tx, actorUserId: string, raw: unknown, 
       action: "reward_run.calculate",
       targetType: "reward_run",
       targetId: runId,
-      details: { pool: input.poolStrategyId, periodStart, periodEnd, distributable: r.distributable.toFixed(), totalRewards: r.totalRewards.toFixed() },
+      details: { pool: input.poolStrategyId, lossModel: model, periodStart, periodEnd, distributable: r.distributable.toFixed(), totalRewards: r.totalRewards.toFixed() },
       ip,
     });
     return runId;
@@ -277,17 +347,45 @@ export async function postRun(
       }
 
       // Reconciliation: the source data must still produce the stored figures.
-      const { result, tradeIds, asset } = await computePeriod(tx, poolId, run.period_start, run.period_end, run.reserve_ratio!, run.cf_open!);
+      const { result, tradeIds, asset } = await computePeriod(
+        tx,
+        poolId,
+        run.period_start,
+        run.period_end,
+        run.reserve_ratio!,
+        run.cf_open!,
+        run.loss_model as LossModel,
+      );
       const mismatches = RECONCILED_FIELDS.filter(([col, key]) => !new Money(String(run[col])).eq(result[key] as Money | number)).map(
         ([col, key]) => ({ field: col, stored: String(run[col]), recomputed: String(result[key]) }),
       );
-      const storedLines = await tx.query<{ allocation_id: string; reward: string }>(
-        "SELECT allocation_id, reward::text FROM reward_run_lines WHERE run_id = $1 ORDER BY allocation_id",
+      // Per line: the reward, and for v2 every per-investment memo balance.
+      const storedLines = await tx.query<{
+        allocation_id: string;
+        reward: string;
+        loss_open: string | null;
+        loss_close: string | null;
+        reserve_open: string | null;
+        reserve_close: string | null;
+        attributable: string | null;
+      }>(
+        `SELECT allocation_id, reward::text, loss_open::text, loss_close::text, reserve_open::text, reserve_close::text,
+                attributable::text FROM reward_run_lines WHERE run_id = $1 ORDER BY allocation_id`,
         [runId],
       );
-      const fresh = new Map(result.lines.map((l) => [l.allocationId, l.reward]));
+      const fresh = new Map<string, (typeof result.lines)[number]>(result.lines.map((l) => [l.allocationId, l]));
+      const same = (a: string | null, b: Money | undefined) => (a === null ? b === undefined : b !== undefined && new Money(a).eq(b));
       const linesMatch =
-        storedLines.rows.length === result.lines.length && storedLines.rows.every((l) => fresh.get(l.allocation_id)?.eq(l.reward));
+        storedLines.rows.length === result.lines.length &&
+        storedLines.rows.every((l) => {
+          const f = fresh.get(l.allocation_id);
+          if (!f || !new Money(l.reward).eq(f.reward)) return false;
+          if (!("lossOpen" in f)) return l.loss_open === null;
+          return (
+            same(l.loss_open, f.lossOpen) && same(l.loss_close, f.lossClose) && same(l.reserve_open, f.reserveOpen) &&
+            same(l.reserve_close, f.reserveClose) && same(l.attributable, f.attributable)
+          );
+        });
       if (mismatches.length || !linesMatch) {
         throw new RunFailure("reconciliation_failed", "Source data changed since calculation; recalculate the period", {
           mismatches,
@@ -474,7 +572,7 @@ const RUN_COLUMNS = `r.id, r.pool_strategy_id AS "poolId", s.code AS "poolCode",
   r.reserve_contribution::text AS "reserveContribution", r.rounding_residual::text AS "roundingResidual",
   r.distributable::text, r.total_rewards::text AS "totalRewards", r.distribution_entry_id AS "distributionEntryId",
   r.reserve_release_entry_id AS "reserveReleaseEntryId", r.error, r.created_at AS "createdAt", r.posted_at AS "postedAt",
-  r.finished_at AS "finishedAt"`;
+  r.finished_at AS "finishedAt", r.loss_model AS "lossModel", r.attribution_residual::text AS "attributionResidual"`;
 
 export async function listRuns(db: Db, poolId?: string) {
   const { rows } = await db.query(
@@ -493,7 +591,10 @@ export async function getRun(db: Db, runId: string) {
     db.query(
       `SELECT l.id::text, l.investment_id AS "investmentId", l.allocation_id AS "allocationId", u.email AS "userEmail",
               l.allocation_amount::text AS "allocationAmount", l.overlap_us::text AS "overlapUs",
-              l.weight_fraction::text AS "weightFraction", l.reward::text, l.released_entry_id AS "releasedEntryId", l.released_at AS "releasedAt"
+              l.weight_fraction::text AS "weightFraction", l.reward::text, l.released_entry_id AS "releasedEntryId", l.released_at AS "releasedAt",
+              l.attributable::text, l.loss_open::text AS "lossOpen", l.loss_recovered::text AS "lossRecovered", l.loss_close::text AS "lossClose",
+              l.reserve_open::text AS "reserveOpen", l.reserve_applied::text AS "reserveApplied",
+              l.reserve_contribution::text AS "reserveContribution", l.reserve_close::text AS "reserveClose"
          FROM reward_run_lines l JOIN users u ON u.id = l.user_id WHERE l.run_id = $1 ORDER BY l.id`,
       [runId],
     ),
@@ -523,10 +624,18 @@ export async function investmentRewardStatement(db: Db, userId: string, investme
   const lines = await db.query(
     `SELECT r.id AS "runId", r.period_start AS "periodStart", r.period_end AS "periodEnd", r.policy_version AS "policyVersion",
             r.net_realised::text AS "poolNetRealised", r.cf_close::text AS "poolLossCarryForward",
-            l.weight_fraction::text AS "weightFraction", l.reward::text, l.released_at AS "releasedAt"
+            l.weight_fraction::text AS "weightFraction", l.reward::text, l.released_at AS "releasedAt",
+            r.loss_model AS "lossModel", l.attributable::text AS "yourShareOfPoolResult", l.loss_recovered::text AS "lossRecovered",
+            l.loss_close::text AS "yourLossToRecover", l.reserve_contribution::text AS "reserveWithheld",
+            l.reserve_applied::text AS "reserveApplied", l.reserve_close::text AS "yourReserve"
        FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
       WHERE l.investment_id = $1 AND r.status = 'posted' ORDER BY r.period_start`,
     [investmentId],
   );
-  return { simulated: true, investment: inv.rows[0], periods: lines.rows };
+  const settlement = await db.query(
+    `SELECT reserve_released::text AS "reserveReturned", loss_expired::text AS "lossExpired", created_at AS "settledAt"
+       FROM reserve_settlements WHERE investment_id = $1`,
+    [investmentId],
+  );
+  return { simulated: true, investment: inv.rows[0], periods: lines.rows, settlement: settlement.rows[0] ?? null };
 }

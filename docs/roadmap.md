@@ -32,6 +32,14 @@ Deferred / open founder decisions:
 - What happens to a positive reserve at pool closure.
 - Scheduled reward runs.
 
+## Milestone 3.5: Economic-model refinement ✅
+- Per-investment loss recovery: a per-investment high-water mark, so investors never inherit losses from before they joined. See `rewards-accounting-v2.md`.
+- Daily UTC accounting periods, calculated only once a day has closed. Posting still needs explicit admin approval, and there is no posting scheduler.
+- Reserves are owned per investment and absorb that investment's own losses. They are returned only by an approved final settlement after maturity, never by pool closure. Pool states: open, closed (settling), closed (settled).
+- Forward-only migration that rewrites no history. Legacy pools with pool-level balances stay on v1 until the founder decides.
+
+Open founder decision: the transition option for legacy pools with balances (A attribute pro rata, B expire the legacy carry-forward, C run off).
+
 ## Milestone 4: Admin and risk
 - Admin console: users, products (create/pause), ledger explorer, audit log viewer, integrity dashboard.
 - Risk engine extensions: concentration limits across strategies, per-product limits, and four-eyes approval for kill-switch release.

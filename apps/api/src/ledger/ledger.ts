@@ -10,7 +10,8 @@ export type EntryType =
   | "strategy_trade"
   | "reward_distribution"
   | "reward_reserve_release"
-  | "reward_release";
+  | "reward_release"
+  | "reserve_settlement";
 
 export interface PostingInput {
   accountId: string;

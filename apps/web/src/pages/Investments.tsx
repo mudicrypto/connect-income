@@ -135,8 +135,17 @@ function InvestmentRow({ i, children }: { i: Investment; children: React.ReactNo
               <>
                 <div className="muted small">
                   Simulated pool {statement.investment.poolCode}: rewards come only from the pool's realised simulated profit for
-                  each closed period. Earlier losses must be recovered before anything is paid. Not guaranteed.
+                  each closed period. Losses during <em>your</em> participation must be recovered from your later share before you
+                  are paid; losses from before you joined never count against you. Part of each reward is withheld as your reserve.
+                  It first absorbs your own later losses, and the remainder is returned at final settlement after maturity. Not
+                  guaranteed.
                 </div>
+                {statement.settlement && (
+                  <div className="success small">
+                    Final settlement: reserve returned {fmt(statement.settlement.reserveReturned, 6)} USDT; unrecovered loss expired{" "}
+                    {fmt(statement.settlement.lossExpired, 6)} (never charged to you).
+                  </div>
+                )}
                 {statement.periods.length === 0 ? (
                   <p className="muted">No reward periods posted yet.</p>
                 ) : (
@@ -146,6 +155,9 @@ function InvestmentRow({ i, children }: { i: Investment; children: React.ReactNo
                         <th>Period</th>
                         <th className="num">Pool net realised</th>
                         <th className="num">Your weight</th>
+                        <th className="num">Your share of result</th>
+                        <th className="num">Loss to recover</th>
+                        <th className="num">Reserve withheld / held</th>
                         <th className="num">Your reward</th>
                         <th>Status</th>
                       </tr>
@@ -158,6 +170,9 @@ function InvestmentRow({ i, children }: { i: Investment; children: React.ReactNo
                           </td>
                           <td className="num">{fmt(p.poolNetRealised)}</td>
                           <td className="num">{pct(p.weightFraction)}</td>
+                          <td className="num">{p.yourShareOfPoolResult ? fmt(p.yourShareOfPoolResult, 6) : "—"}</td>
+                          <td className="num">{p.yourLossToRecover ? fmt(p.yourLossToRecover, 6) : "—"}</td>
+                          <td className="num">{p.reserveWithheld ? `${fmt(p.reserveWithheld, 6)} / ${fmt(p.yourReserve!, 6)}` : "—"}</td>
                           <td className="num">{fmt(p.reward, 6)}</td>
                           <td>
                             {/^0(\.0+)?$/.test(p.reward) ? (
