@@ -53,6 +53,24 @@ export async function updatePool(db: Db, actorUserId: string, poolId: string, ra
   return withTransaction(db, async (tx) => {
     const before = await tx.query("SELECT customer_capacity::text, status FROM reward_pools WHERE strategy_id = $1 FOR UPDATE", [poolId]);
     if (!before.rows[0]) throw notFound("Pool not found");
+    if (input.status === "closed" && before.rows[0].status !== "closed") {
+      // Closing means "closed to new participation". Existing obligations stay:
+      // active allocations keep participating in later runs, posted rewards are
+      // released at maturity, and the reserve remains a customer-side liability.
+      const assigned = await tx.query<{ code: string }>(
+        `SELECT p.code FROM investment_products p
+          WHERE (SELECT a.pool_strategy_id FROM product_pool_assignments a WHERE a.product_id = p.id ORDER BY a.id DESC LIMIT 1) = $1`,
+        [poolId],
+      );
+      if (assigned.rowCount) {
+        throw conflict(
+          "pool_has_products",
+          `Reassign these products before closing the pool (they are still assigned to it): ${assigned.rows.map((r) => r.code).join(", ")}`,
+        );
+      }
+      const pending = await tx.query("SELECT 1 FROM reward_runs WHERE pool_strategy_id = $1 AND status = 'calculated'", [poolId]);
+      if (pending.rowCount) throw conflict("pool_run_pending", "Post or cancel the pending reward run before closing the pool");
+    }
     await tx.query(
       `UPDATE reward_pools SET customer_capacity = COALESCE($2, customer_capacity), status = COALESCE($3, status)
         WHERE strategy_id = $1`,
@@ -139,7 +157,10 @@ export async function allocateInvestmentToPool(
   inv: { investmentId: string; userId: string; productId: string; principal: Money; ip?: string | null },
 ) {
   const a = await tx.query<{ id: string; pool_strategy_id: string | null }>(
-    `SELECT id::text, pool_strategy_id FROM product_pool_assignments WHERE product_id = $1 ORDER BY id DESC LIMIT 1`,
+    // Order by the table column: ORDER BY id with "id::text" in the select list would
+    // sort the text alias ("9" > "10") and pick a stale assignment.
+    `SELECT a.id::text AS id, a.pool_strategy_id FROM product_pool_assignments a
+      WHERE a.product_id = $1 ORDER BY a.id DESC LIMIT 1`,
     [inv.productId],
   );
   const assignment = a.rows[0];
@@ -219,10 +240,23 @@ export async function listPools(db: Db) {
 }
 
 /** Current pool (if any) per product, for product listings. */
-export async function productPools(db: Db | Tx): Promise<Map<string, { poolId: string; poolCode: string; poolName: string }>> {
-  const { rows } = await db.query<{ product_id: string; pool_id: string; code: string; name: string }>(`
-    SELECT DISTINCT ON (a.product_id) a.product_id, a.pool_strategy_id AS pool_id, s.code, s.name
-      FROM product_pool_assignments a LEFT JOIN strategies s ON s.id = a.pool_strategy_id
+export interface ProductPool {
+  poolId: string;
+  poolCode: string;
+  poolName: string;
+  /** Whether new investments can currently be allocated (pool active and its strategy not paused). */
+  accepting: boolean;
+}
+
+export async function productPools(db: Db | Tx): Promise<Map<string, ProductPool>> {
+  const { rows } = await db.query<{ product_id: string; pool_id: string; code: string; name: string; accepting: boolean }>(`
+    SELECT DISTINCT ON (a.product_id) a.product_id, a.pool_strategy_id AS pool_id, s.code, s.name,
+           (rp.status = 'active' AND s.status = 'active') AS accepting
+      FROM product_pool_assignments a
+      LEFT JOIN strategies s ON s.id = a.pool_strategy_id
+      LEFT JOIN reward_pools rp ON rp.strategy_id = a.pool_strategy_id
      ORDER BY a.product_id, a.id DESC`);
-  return new Map(rows.filter((r) => r.pool_id).map((r) => [r.product_id, { poolId: r.pool_id, poolCode: r.code, poolName: r.name }]));
+  return new Map(
+    rows.filter((r) => r.pool_id).map((r) => [r.product_id, { poolId: r.pool_id, poolCode: r.code, poolName: r.name, accepting: r.accepting }]),
+  );
 }

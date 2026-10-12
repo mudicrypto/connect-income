@@ -117,7 +117,8 @@ async function lastPosted(tx: Tx, poolId: string) {
 const calculateSchema = z
   .object({
     poolStrategyId: z.string().regex(/^[0-9a-f-]{36}$/i),
-    periodEnd: z.string().datetime({ offset: true }),
+    // Optional: defaults to the database clock, so client clock skew cannot matter.
+    periodEnd: z.string().datetime({ offset: true }).optional(),
   })
   .strict();
 
@@ -142,7 +143,9 @@ export async function calculateRunTx(tx: Tx, actorUserId: string, raw: unknown, 
 
     const prev = await lastPosted(tx, input.poolStrategyId);
     const periodStart = prev ? prev.period_end : pool.rows[0].rewards_start_at;
-    const periodEnd = new Date(input.periodEnd);
+    const periodEnd = input.periodEnd
+      ? new Date(input.periodEnd)
+      : (await tx.query<{ now: Date }>("SELECT now() AS now")).rows[0]!.now;
     const check = await tx.query<{ ok_order: boolean; ok_past: boolean }>(
       "SELECT $2::timestamptz > $1::timestamptz AS ok_order, $2::timestamptz <= now() AS ok_past",
       [periodStart, periodEnd],
@@ -254,7 +257,19 @@ export async function postRun(
       if (!run) throw notFound("Reward run not found");
       if (run.status !== "calculated") throw conflict("run_not_postable", `Run is ${run.status}; only calculated runs can be posted`);
       const poolId = run.pool_strategy_id!;
+      // Lock order: run -> pool -> strategy -> investments -> ledger accounts.
+      // The pool lock serialises with new allocations; the strategy lock waits for
+      // any in-flight tick or capital allocation, so the recomputation below sees
+      // every write dated inside the period (later writers hit the DB period guard).
       await tx.query("SELECT 1 FROM reward_pools WHERE strategy_id = $1 FOR UPDATE", [poolId]);
+      await tx.query("SELECT 1 FROM strategies WHERE id = $1 FOR UPDATE", [poolId]);
+      // Lock the recipients' investments so a concurrent maturity settlement either
+      // completes first (and we release below) or waits and then sees this run posted.
+      await tx.query(
+        `SELECT i.id FROM investments i WHERE i.id IN (SELECT investment_id FROM reward_run_lines WHERE run_id = $1)
+          ORDER BY i.id FOR UPDATE`,
+        [runId],
+      );
 
       const prev = await lastPosted(tx, poolId);
       if (prev && prev.period_end.getTime() !== run.period_start.getTime()) {
@@ -345,6 +360,18 @@ export async function postRun(
             ],
           })
         ).entryId;
+      }
+
+      // Distributions and reserve releases are capital flows, not trading results:
+      // shift the strategy's risk baselines exactly as capital allocations do, so the
+      // drawdown and daily-loss monitors never mistake a payout for a loss.
+      const flow = reserveApplied.minus(eligible);
+      if (!flow.isZero()) {
+        await tx.query(
+          `UPDATE strategies SET last_equity = last_equity + $2, peak_equity = peak_equity + $2,
+                  day_start_equity = day_start_equity + $2 WHERE id = $1`,
+          [poolId, flow.toFixed()],
+        );
       }
 
       for (const t of tradeIds) await tx.query("INSERT INTO reward_run_sources (run_id, trade_id) VALUES ($1, $2)", [runId, t]);

@@ -28,7 +28,7 @@ Simulation only. No real funds, private keys, exchange API keys or mainnet contr
 ## Strategy engine (milestone 2)
 - All strategy endpoints live under `/api/admin/*`. A plugin-level `preHandler` requires the admin role, so every route returns 401 or 403 otherwise. The tests check every route for both cases.
 - Every strategy-management action is written to `audit_logs`: create, pause, resume, allocate, kill switch, market advance and engine run. Engine and risk events go to the append-only `strategy_events` table.
-- Strategy logic is pure code. It receives only prices and its own position state, and has no handle to users, sessions, credentials or customer accounts. The engine can only post entries between a strategy's own accounts. The integrity check flags any entry that mixes strategy and non-strategy accounts.
+- Strategy logic is pure code. It receives only prices and its own position state, and has no handle to users, sessions, credentials or customer accounts. The engine can only post entries between a strategy's own accounts. Only reward posting may move realised profit out, and only as a two-sided entry whose strategy half and customer half balance independently. The integrity check flags any other mixing.
 - Market data is synthetic only. The DB rejects instrument symbols without the `SIM-` prefix and `is_simulated = false`. There are no exchange connectors or credentials anywhere in the codebase.
 - Risk limits are enforced on the server inside the tick transaction. The UI only displays them.
 - Server-side validation of strategy parameters is strict (unknown keys rejected); amounts must be decimal strings.

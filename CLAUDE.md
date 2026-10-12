@@ -31,14 +31,17 @@ Crypto-finance **simulation** platform. Everything is simulated: no real funds, 
 10. Add tests for every financial flow, invariant and authorization rule. `checkLedgerIntegrity()` must report zero problems after every test scenario.
 11. Ask the founder before destructive commands or anything with external side effects.
 12. **Simulation labelling**: instruments must be `SIM-*` with `is_simulated = true` (DB-enforced); every UI surface showing strategy data says "simulated". Never present synthetic prices, trades or P&L as real.
-13. **Strategy money stays in the strategy sub-ledger.** Strategy entries may only touch that strategy's own accounts; a strategy profit never credits a customer. Linking customer principal to strategies needs an explicit design + migration (milestone 3).
+13. **Strategy money stays in the strategy sub-ledger.** Strategy entries may only touch that strategy's own accounts. The sole exit is a posted reward run (rule 19), which moves realised profit to customer liabilities in a two-sided entry. A strategy profit never credits a customer directly.
 14. **Engine changes must keep processing idempotent and resumable**: one transaction per (strategy, tick), cursor advanced in the same transaction, deterministic journal keys. Decision rules must stay pure and deterministic.
 15. **Risk checks run on the server** inside the tick transaction; the UI only displays them.
 16. SQL gotcha: never `ORDER BY x` when the SELECT list contains `x::text` (sorts as text). Qualify the column (`t.x`).
 17. **Rewards follow `docs/rewards-accounting.md` exactly** — change the doc first, then the code. Only realised P&L is distributable; losses carry forward; rewards are capped by the distributable amount; rounding residuals go to the reserve. Never pay anything because time elapsed.
 18. **Customer principal is never deployed into strategies.** Allocations are simulated participation records; paper capital is never treated as customer money. Rewards are paid only with cash that exists in the pool's `strategy_cash`, moved in the same entry that creates the customer liability.
 19. Reward runs: calculate writes no ledger entries; post recomputes and reconciles before writing; posted/cancelled/failed runs are final. Cross-ledger entries are allowed only for `reward_distribution` / `reward_reserve_release`, each half balanced.
-20. SQL gotcha: `now()` is the transaction START time — never use it to decide what concurrent, already-committed rows "exist yet" (see the pool capacity check).
+20. SQL gotcha: `now()` is the transaction START time — never use it to decide what concurrent, already-committed rows "exist yet" (see the pool capacity check). Writes dated inside a posted reward period are rejected by DB triggers with SQLSTATE 40001 and retried by `withTransaction`.
+21. **Every capital flow in or out of a strategy must shift its risk baselines** (`last_equity`, `peak_equity`, `day_start_equity`) in the same transaction, or the risk monitor mistakes it for P&L. Allocations and reward postings do this today.
+22. **Reward posting lock order:** run → pool → strategy → recipients' investments → ledger accounts. New code touching these rows must follow the same order.
+23. `test/sql-lint.test.ts` statically rejects `ORDER BY x` with `x::text` in the select list; keep it passing. `docs/milestone-3-audit.md` lists the audit findings and the open economic decisions.
 
 ## Architecture decisions (short)
 - Postgres enforces ledger invariants with triggers (balanced entries checked as deferred constraints at COMMIT, no overdraft CHECK, immutability), so a bug in app code cannot corrupt the books.

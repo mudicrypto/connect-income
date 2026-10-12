@@ -112,7 +112,7 @@ A crash rolls back only the in-flight tick. The next run resumes at the cursor a
 
 Limits are checked at trade time. A price move after a trade can push a position above the position or exposure limit without a trade. The engine does not force-reduce in that case; it simply won't add more. Loss limits do force action.
 
-Resuming a paused strategy re-baselines peak and day-start equity to current equity. Allocations shift those baselines by the allocated amount, so capital flows never register as P&L.
+Resuming a paused strategy re-baselines peak and day-start equity to current equity. Capital allocations and reward postings shift those baselines by the amount moved (reward postings shift by −distributed + reserve returned), so capital flows never register as P&L.
 
 **Determinism.** The decision rules are pure functions of prices and state. The tests check that an interrupted run, a run split across concurrent workers, and a single uninterrupted run all produce identical trades.
 

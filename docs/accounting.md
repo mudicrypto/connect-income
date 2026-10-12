@@ -25,7 +25,7 @@ All amounts are exact decimals. USDT uses 6 decimal places (`assets.scale`); sto
 | `strategy_realised_loss` | expense | debit | strategy | Realised simulated trading losses |
 | `strategy_fees` | expense | debit | strategy | Simulated venue fees paid |
 
-Each strategy owns its own six accounts (`owner_strategy_id`), forming a **self-contained sub-ledger**. No journal entry may mix strategy accounts with non-strategy accounts. The integrity checker verifies this.
+Each strategy owns its `strategy_*` accounts (`owner_strategy_id`), forming a **self-contained sub-ledger**. Since milestone 3 a strategy has seven: the six above plus `strategy_distributions`. No journal entry may mix strategy accounts with non-strategy accounts. The only exceptions are the two reward entry types (`reward_distribution`, `reward_reserve_release`), whose strategy half and customer half must each balance on their own (see `rewards-accounting.md`). The integrity checker verifies this. `pool_reserve` is owned by a pool but sits on the customer side, not in the sub-ledger.
 
 Planned separate purposes (each its own account, never commingled): `reward_liability`, `treasury`, `fee_revenue`, `exchange_liquidity`, `token_*`.
 
@@ -48,7 +48,7 @@ Planned separate purposes (each its own account, never commingled): `reward_liab
 Accounting identity at all times, per asset: **Σ debit-normal balances = Σ credit-normal balances** (custody = Σ user available + Σ user invested).
 
 ### Strategy sub-ledger identity
-For every strategy: **cash + position cost = capital + realised gains − realised losses − fees**.
+For every strategy: **cash + position cost = capital + realised gains − realised losses − fees − distributions**. Distributions are realised profit swept out to customers by reward runs, net of any reserve returned to the pool.
 Equity (shown in the dashboard) = cash + position quantity × last synthetic price (rounded down).
 Net P&L = equity − capital = realised P&L − fees + unrealised P&L.
 
@@ -68,7 +68,9 @@ Fees are expensed (`strategy_fees`), not capitalised into cost basis. Slippage i
 5. Each user's `user_invested` balance = sum of their active investments' principal.
 6. Trial balance holds per asset.
 7. Per strategy: ledger position cost = `strategy_positions.cost_basis`; position quantity = net traded quantity; ledger realised P&L = Σ trade `realised_pnl`; ledger fees = Σ trade fees; the sub-ledger balances; the cursor equals the last tick result.
-8. No journal entry mixes strategy and non-strategy accounts.
+8. No journal entry mixes strategy and non-strategy accounts, except the two reward entry types, and each of their halves balances.
+9. Customer-side solvency: per asset, `platform_sim_custody` = Σ `user_available` + Σ `user_invested` + Σ `user_reward_pending` + Σ `pool_reserve`.
+10. The reward invariants in `rewards-accounting.md` section 6, including: no posted reward left pending on a matured investment, and no pool trade dated inside a posted period that is excluded from it.
 
 Exposed at `GET /api/admin/ledger/integrity` (admin only) and asserted in tests.
 

@@ -23,7 +23,7 @@ export interface Product {
   strategyDescription: string;
   riskDisclosure: string;
   devOnly: boolean;
-  pool: { poolId: string; poolCode: string; poolName: string } | null;
+  pool: { poolId: string; poolCode: string; poolName: string; accepting: boolean } | null;
 }
 export interface Investment {
   id: string;
@@ -131,6 +131,7 @@ export interface StrategySummary {
   fees: string;
   unrealisedPnl: string;
   netPnl: string;
+  distributedToCustomers: string;
   exposureRatio: string;
   peakEquity: string;
   drawdownRatio: string;

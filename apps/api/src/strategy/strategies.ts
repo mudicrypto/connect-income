@@ -386,7 +386,7 @@ export async function getStrategyDetail(db: Db, id: string) {
     db.query(
       `SELECT id::text, event_type AS "eventType", tick_seq::text AS "tickSeq", details, actor_user_id AS "actorUserId",
               created_at AS "createdAt"
-         FROM strategy_events WHERE strategy_id = $1 ORDER BY id DESC LIMIT 200`,
+         FROM strategy_events e WHERE strategy_id = $1 ORDER BY e.id DESC LIMIT 200`,
       [id],
     ),
     db.query(

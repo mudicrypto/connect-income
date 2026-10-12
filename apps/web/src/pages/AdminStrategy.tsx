@@ -48,13 +48,19 @@ export function AdminStrategyPage() {
         <Tile label="Realised P&L" value={<PnlCell value={s.realisedPnl} />} />
         <Tile label="Unrealised P&L" value={<PnlCell value={s.unrealisedPnl} />} />
         <Tile label="Fees paid" value={fmt(s.fees)} />
+        <Tile
+          label="Distributed to customers"
+          value={fmt(s.distributedToCustomers)}
+          sub="realised profit swept out by reward runs; not a loss"
+        />
         <Tile label="Exposure" value={`${fmt(s.positionValue)} · ${pct(s.exposureRatio)}`} />
         <Tile label="Current drawdown" value={pct(s.drawdownRatio)} sub={`limit ${pct(s.limits.maxDrawdownRatio)}`} />
         <Tile label="Today's P&L (simulated day)" value={<PnlCell value={s.dayPnl} />} sub={`limit −${fmt(s.limits.dailyLossLimit)}`} />
       </div>
       <p className="muted small">
         All figures are SIMULATED, in USDT. Realised P&amp;L is booked in the strategy's own ledger accounts. Unrealised
-        P&amp;L is a mark-to-market valuation at the last synthetic price and is not booked.
+        P&amp;L is a mark-to-market valuation at the last synthetic price and is not booked. Profit distributed to customers
+        reduces equity and cash, but not net P&amp;L, and it does not count against risk limits.
       </p>
 
       <EquityChart series={data.equitySeries} />

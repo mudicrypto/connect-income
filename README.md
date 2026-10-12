@@ -120,7 +120,7 @@ CLAUDE.md    engineering rules and key decisions
 | GET/POST | `/api/admin/rewards/pools` · PATCH `/pools/:id` | admin: list, register, update capacity or status |
 | POST | `/api/admin/rewards/product-assignments` `{productId, poolStrategyId\|null}` | admin |
 | POST | `/api/admin/rewards/policies` `{name, reserveRatio}` | admin: new immutable policy version |
-| GET/POST | `/api/admin/rewards/runs` `{poolStrategyId, periodEnd}` | admin; POST requires `Idempotency-Key`; calculates only, no ledger writes |
+| GET/POST | `/api/admin/rewards/runs` `{poolStrategyId, periodEnd?}` | admin; POST requires `Idempotency-Key`; `periodEnd` defaults to the server clock; calculates only, no ledger writes |
 | GET | `/api/admin/rewards/runs/:id` | admin: figures, recipients, source trades |
 | POST | `/api/admin/rewards/runs/:id/post` · `/cancel` | admin |
 
@@ -152,7 +152,8 @@ Amounts are always decimal **strings** (e.g. `"100.50"`).
 - [x] Rewards from realised profit only, after fees and losses, with reserve, loss carry-forward, pro-rata floor rounding, residual to reserve, and a hard cap
 - [x] Rewards accrue as customer liabilities and are released at maturity; per-investment statement
 - [x] Admin rewards console; user reward visibility; all labelled simulated
-- [x] 93 tests in total (23 new in milestone 3)
+- [x] 93 tests at the end of milestone 3 (23 new in milestone 3)
+- [x] **Milestone 3 audit** (`docs/milestone-3-audit.md`): 8 defects fixed, with regression tests, DB guards and a SQL lint; 112 tests in total
 
 ### Next
 - [ ] AI-agent strategy type (plugs into the pure decision-rule interface)

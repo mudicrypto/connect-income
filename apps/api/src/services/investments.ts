@@ -23,7 +23,7 @@ export interface ProductView {
   devOnly: boolean;
   status: string;
   /** Simulated strategy pool backing variable rewards, if any. */
-  pool: { poolId: string; poolCode: string; poolName: string } | null;
+  pool: { poolId: string; poolCode: string; poolName: string; accepting: boolean } | null;
 }
 
 interface ProductRow {
@@ -327,6 +327,22 @@ export async function settleMaturedInvestments(
       return true;
     });
     if (done) settled.push(id);
+  }
+
+  // Defence in depth: release any posted reward still pending on an investment
+  // that has already matured (should never exist; checked by the integrity checker).
+  const stranded = await db.query<{ id: string }>(
+    `SELECT DISTINCT l.investment_id AS id FROM reward_run_lines l
+       JOIN reward_runs r ON r.id = l.run_id JOIN investments i ON i.id = l.investment_id
+      WHERE r.status = 'posted' AND l.reward > 0 AND l.released_entry_id IS NULL AND i.status = 'matured'
+      LIMIT $1`,
+    [opts.limit ?? 500],
+  );
+  for (const { id } of stranded.rows) {
+    await withTransaction(db, async (tx) => {
+      await tx.query("SELECT 1 FROM investments WHERE id = $1 FOR UPDATE", [id]);
+      await releaseInvestmentRewards(tx, id, opts.actorUserId ?? null);
+    });
   }
   return { settled };
 }

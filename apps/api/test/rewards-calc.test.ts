@@ -157,3 +157,26 @@ describe("capital integral", () => {
     expect(capitalIntegral([], m(0), m(100)).toFixed()).toBe("0");
   });
 });
+
+describe("characterization of current economic rules (decisions pending: docs/milestone-3-audit.md)", () => {
+  it("E1: the loss carry-forward is pool-wide, so a later cohort repays an earlier cohort's loss", () => {
+    // Period 1: only Alice participates; customer-attributable loss of 100.
+    const p1 = calculateRewards(
+      base({ trades: [{ realisedPnl: m("-100"), fee: m(0) }], capitalIntegral: m("1"), allocations: [alloc("alice", "1", "1")], reserveRatio: m(0) }),
+    );
+    expect(s(p1.cfClose)).toBe("100.000000");
+    // Period 2: Alice has matured and left; only Bob participates; the pool earns +100.
+    const p2 = calculateRewards(
+      base({
+        trades: [{ realisedPnl: m("100"), fee: m(0) }],
+        capitalIntegral: m("1"),
+        allocations: [alloc("bob", "1", "1")],
+        cfOpen: p1.cfClose,
+        reserveRatio: m(0),
+      }),
+    );
+    // Current rule: Bob receives nothing; his share recovers Alice's loss for the pool.
+    expect(s(p2.totalRewards)).toBe("0.000000");
+    expect(s(p2.cfRecovered)).toBe("100.000000");
+  });
+});

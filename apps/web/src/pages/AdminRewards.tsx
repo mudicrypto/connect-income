@@ -164,7 +164,7 @@ function CalculateRun({ pools }: { pools: RewardPool[] }) {
     try {
       const res = await api<RewardRunDetail>("/api/admin/rewards/runs", {
         method: "POST",
-        body: { poolStrategyId: selected, periodEnd: new Date().toISOString() },
+        body: { poolStrategyId: selected }, // period end = server clock
         idempotencyKey,
       });
       setAttempt((a) => a + 1);

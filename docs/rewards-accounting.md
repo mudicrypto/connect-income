@@ -55,7 +55,7 @@ follows. Amounts are exact decimals; USDT has 6 decimal places.
   - `effective_from = investment.start_at`;
   - `effective_to = investment.maturity_at` (fixed term, known in advance).
 - **Limits.** The investment is rejected (nothing is posted) unless both of these hold:
-  - the active allocations at that moment plus the new amount are ≤
+  - all allocations that have not yet ended (whatever their start time, so concurrent investments cannot race past capacity) plus the new amount are ≤
     `min(pool.customer_capacity, current strategy_capital balance)`;
   - the pool is `active` and its strategy is not paused.
 
@@ -227,5 +227,32 @@ Checked by `checkLedgerIntegrity()` (and after every test):
 - No performance fee (founder decision for milestone 3). The policy has no fee field; adding
   one needs a new policy version, a fee-revenue account and this document updated.
 - The reserve is only ever used to absorb customer-attributable losses. What happens to a
-  positive reserve when a pool is closed is a future decision.
+  positive reserve when a pool is closed is a future decision (see the audit).
+
+## 8. Pool closure (added after the milestone-3 audit)
+
+Closing a pool means **closed to new participation**. It does not end any obligation.
+
+- **Preconditions.** No product may still be assigned to the pool, so reassign products first.
+  There must be no `calculated` run pending, so post or cancel it first.
+- **After closing:**
+  - existing allocations keep participating until they end;
+  - reward runs can still be calculated and posted;
+  - posted rewards are still released at maturity;
+  - the `pool_reserve` balance stays a customer-side liability.
+- **Not yet defined.** What a closed pool's leftover reserve finally becomes once every
+  allocation has ended. This is an open founder decision.
+
+## 9. Period integrity (added after the milestone-3 audit)
+
+- Posting takes the pool and strategy row locks. Any in-flight engine tick or capital allocation
+  therefore finishes first, and if it was dated inside the period the reconciliation catches it.
+- DB triggers reject any later write dated inside an already-posted period with SQLSTATE
+  `40001`: a trade, a `strategy_capital` posting, or a customer allocation. The application
+  retries it in a fresh transaction, which dates it into the next open period.
+- The integrity checker also flags any pool trade dated inside a posted period that is missing
+  from that run's sources.
+- **Risk baselines.** Posting shifts the strategy's risk baselines by −(swept) + (reserve
+  returned), so distributions never trigger drawdown or daily-loss limits.
+- **Period end.** `periodEnd` is optional; it defaults to the database clock.
 - No platform treasury yet.

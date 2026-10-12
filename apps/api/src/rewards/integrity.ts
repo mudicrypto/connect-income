@@ -41,5 +41,33 @@ export async function rewardIntegrityProblems(db: Db | Tx): Promise<string[]> {
      WHERE r.status = 'posted' AND r.source_trade_count <> (SELECT count(*) FROM reward_run_sources s WHERE s.run_id = r.id)`);
   for (const r of sourcesBad.rows) problems.push(`reward run ${r.id}: recorded sources differ from source_trade_count`);
 
+  // D2: a posted reward must not stay pending on an investment that already matured.
+  const stranded = await db.query<{ id: string }>(`
+    SELECT DISTINCT l.investment_id AS id FROM reward_run_lines l
+      JOIN reward_runs r ON r.id = l.run_id JOIN investments i ON i.id = l.investment_id
+     WHERE r.status = 'posted' AND l.reward > 0 AND l.released_entry_id IS NULL AND i.status = 'matured'`);
+  for (const r of stranded.rows) problems.push(`matured investment ${r.id} still has unreleased posted rewards`);
+
+  // D3: every realised trade of a pool dated inside a posted period must belong to a posted run.
+  const orphans = await db.query<{ id: string }>(`
+    SELECT t.id FROM strategy_trades t
+      JOIN journal_entries e ON e.id = t.entry_id
+      JOIN reward_pools rp ON rp.strategy_id = t.strategy_id
+     WHERE e.created_at >= rp.rewards_start_at
+       AND e.created_at < (SELECT max(period_end) FROM reward_runs r WHERE r.pool_strategy_id = rp.strategy_id AND r.status = 'posted')
+       AND NOT EXISTS (SELECT 1 FROM reward_run_sources s WHERE s.trade_id = t.id)`);
+  for (const r of orphans.rows) problems.push(`trade ${r.id} is dated inside a posted reward period but excluded from it`);
+
+  // Customer-side solvency: simulated custody exactly backs every customer liability
+  // (available, invested, pending rewards) plus the pool reserves.
+  const solvency = await db.query<{ asset: string; custody: string; liabilities: string }>(`
+    SELECT asset,
+           COALESCE(sum(balance) FILTER (WHERE purpose = 'platform_sim_custody'), 0)::text AS custody,
+           COALESCE(sum(balance) FILTER (WHERE purpose IN ('user_available', 'user_invested', 'user_reward_pending', 'pool_reserve')), 0)::text AS liabilities
+      FROM ledger_accounts GROUP BY asset
+    HAVING COALESCE(sum(balance) FILTER (WHERE purpose = 'platform_sim_custody'), 0)
+        <> COALESCE(sum(balance) FILTER (WHERE purpose IN ('user_available', 'user_invested', 'user_reward_pending', 'pool_reserve')), 0)`);
+  for (const r of solvency.rows) problems.push(`${r.asset}: custody ${r.custody} does not equal customer liabilities + reserves ${r.liabilities}`);
+
   return problems;
 }

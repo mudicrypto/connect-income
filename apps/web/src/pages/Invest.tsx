@@ -84,6 +84,12 @@ export function InvestPage() {
               </dd>
             </dl>
             <div className="warning small">{product.riskDisclosure}</div>
+            {product.pool && !product.pool.accepting && (
+              <div className="error">
+                The simulated strategy pool behind this product is paused or closed, so it is not accepting new investments right
+                now.
+              </div>
+            )}
           </div>
         )}
         <label>
@@ -109,7 +115,7 @@ export function InvestPage() {
           principal is locked until maturity and that returns are not guaranteed.
         </label>
         {error && <div className="error">{error}</div>}
-        <button className="primary" disabled={busy || !acknowledged || !product}>
+        <button className="primary" disabled={busy || !acknowledged || !product || (product.pool !== null && !product.pool.accepting)}>
           Invest
         </button>
       </form>
