@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useLoad } from "../useLoad";
 
@@ -22,6 +23,13 @@ export function AdminPage() {
   return (
     <div className="stack">
       <h2>Admin</h2>
+      <div className="card">
+        <h3>Strategy engine (simulated)</h3>
+        <p className="muted small">Paper-trading strategies on synthetic market data, with risk limits and the kill switch.</p>
+        <Link className="button" to="/admin/strategies">
+          Open strategy dashboard →
+        </Link>
+      </div>
       {error && <div className="error">{error}</div>}
       <div className="card">
         <div className="row spread">

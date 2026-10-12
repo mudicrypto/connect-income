@@ -25,10 +25,18 @@ Simulation only. No real funds, private keys, exchange API keys or mainnet contr
 - Balance cache can only change through postings; overdrafts are blocked by a CHECK constraint.
 - Investment terms are immutable; matured investments are final.
 
-## Future AI agents / strategies
-- Run with a separate DB role and service API that can only post strategy P&L entries to strategy accounts.
-- No access to user tables, sessions, password hashes or withdrawal flows.
-- All actions are audited; limits come from the risk engine.
+## Strategy engine (milestone 2)
+- All strategy endpoints live under `/api/admin/*`. A plugin-level `preHandler` requires the admin role, so every route returns 401 or 403 otherwise. The tests check every route for both cases.
+- Every strategy-management action is written to `audit_logs`: create, pause, resume, allocate, kill switch, market advance and engine run. Engine and risk events go to the append-only `strategy_events` table.
+- Strategy logic is pure code. It receives only prices and its own position state, and has no handle to users, sessions, credentials or customer accounts. The engine can only post entries between a strategy's own accounts. The integrity check flags any entry that mixes strategy and non-strategy accounts.
+- Market data is synthetic only. The DB rejects instrument symbols without the `SIM-` prefix and `is_simulated = false`. There are no exchange connectors or credentials anywhere in the codebase.
+- Risk limits are enforced on the server inside the tick transaction. The UI only displays them.
+- Server-side validation of strategy parameters is strict (unknown keys rejected); amounts must be decimal strings.
+
+## Future AI agents
+- AI agent strategies will plug in as decision rules with the same interface as `strategy/logic.ts`: they receive market data and their own state and return a desired position. They never call the ledger or the database directly.
+- They will run in a separate process or worker with its own DB role, which can only write through the engine's service API.
+- They will have no access to user tables, sessions, password hashes or withdrawal flows. All their actions will be audited, and limits come from the risk engine.
 
 ## Secrets
 `.env` is gitignored. Use `.env.example` as the template. Rotate anything that is accidentally committed.
@@ -38,3 +46,5 @@ Simulation only. No real funds, private keys, exchange API keys or mainnet contr
 - No account lockout beyond IP rate limiting.
 - No CSP/security headers (add `@fastify/helmet` when serving the built UI from the API).
 - Rate limiter is in-memory (single instance only).
+- The strategy engine runs inside the API process with the same DB role. A dedicated least-privilege role is planned.
+- Admin actions are single-approver. Four-eyes approval for kill-switch release and large allocations is planned.

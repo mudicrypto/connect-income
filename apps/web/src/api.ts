@@ -94,3 +94,91 @@ export function termLabel(minutes: number): string {
 }
 
 export const newKey = () => crypto.randomUUID();
+
+// ---------------------------------------------------------------------------
+// Strategy engine (admin, SIMULATED)
+// ---------------------------------------------------------------------------
+export interface StrategySummary {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  type: "trading" | "staking" | "lending";
+  status: "active" | "paused";
+  pauseReason: string | null;
+  pausedAt: string | null;
+  instrument: { symbol: string; name: string };
+  asset: string;
+  limits: { maxAllocation: string; maxPositionValue: string; maxExposureRatio: string; dailyLossLimit: string; maxDrawdownRatio: string };
+  params: Record<string, unknown>;
+  lastTickSeq: string;
+  markPrice: string | null;
+  markSimulatedAt: string | null;
+  allocatedCapital: string;
+  cash: string;
+  positionQty: string;
+  costBasis: string;
+  positionValue: string;
+  equity: string;
+  realisedGain: string;
+  realisedLoss: string;
+  realisedPnl: string;
+  fees: string;
+  unrealisedPnl: string;
+  netPnl: string;
+  exposureRatio: string;
+  peakEquity: string;
+  drawdownRatio: string;
+  dayPnl: string;
+  tradeCount: number;
+  breachCount: number;
+}
+export interface StrategyTrade {
+  id: string;
+  tickSeq: string;
+  side: "buy" | "sell";
+  reason: string;
+  quantity: string;
+  midPrice: string;
+  execPrice: string;
+  notional: string;
+  fee: string;
+  slippageCost: string;
+  realisedPnl: string;
+  positionQtyAfter: string;
+  createdAt: string;
+}
+export interface StrategyEvent {
+  id: string;
+  eventType: string;
+  tickSeq: string | null;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+export interface StrategyDetail {
+  strategy: StrategySummary;
+  trades: StrategyTrade[];
+  events: StrategyEvent[];
+  equitySeries: Array<{ tickSeq: string; price: string; equity: string; drawdownRatio: string; status: string }>;
+}
+export interface EngineState {
+  killSwitch: { enabled: boolean; reason: string | null; updatedAt: string };
+  runs: Array<{ id: string; trigger: string; status: string; ticksProcessed: number; trades: number; error: string | null; startedAt: string }>;
+  instruments: Array<{ id: string; symbol: string; name: string; kind: string; dataSource: string; feeBps: string; slippageBps: string; latestSeq: string | null; latestPrice: string | null; latestSimulatedAt: string | null }>;
+}
+
+/** Ratio string ("0.123456") to a percent string ("12.34%") without floating point. */
+export function pct(ratio: string, decimals = 2): string {
+  const neg = ratio.startsWith("-");
+  const [int = "0", rawFrac = ""] = ratio.replace("-", "").split(".");
+  const frac = rawFrac.padEnd(decimals + 2, "0");
+  // Shift the decimal point two places right, truncating (never rounding up).
+  const intPart = (int + frac.slice(0, 2)).replace(/^0+(?=\d)/, "");
+  const fracPart = frac.slice(2, 2 + decimals);
+  return `${neg ? "-" : ""}${intPart}${decimals > 0 ? "." + fracPart : ""}%`;
+}
+
+/** Signed money display: "+12.34" / "-5.00". */
+export function signed(amount: string, decimals = 2): string {
+  return amount.startsWith("-") ? fmt(amount, decimals) : `+${fmt(amount, decimals)}`;
+}

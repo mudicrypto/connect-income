@@ -62,3 +62,28 @@ th { color: var(--muted); font-weight: 500; }
 .tabs { display: flex; gap: 0.5rem; }
 .tabs button.active { border-color: var(--accent); color: var(--accent); }
 .dev-login { border-top: 1px dashed var(--border); padding-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+/* --- Strategy engine (admin) --- */
+.sim-badge { display: inline-block; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0.1rem 0.35rem; vertical-align: middle; margin-left: 0.4rem; }
+.status { font-size: 0.85rem; white-space: nowrap; }
+.status.active { color: var(--accent); }
+.status.paused { color: var(--warn); }
+.status.breach { color: var(--danger); }
+.wrap { flex-wrap: wrap; }
+.grid4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1rem; }
+.table-scroll { overflow-x: auto; }
+.kill-on { border-color: var(--danger); }
+button.danger { border-color: var(--danger); color: var(--danger); }
+.kv { display: grid; grid-template-columns: 150px 1fr; gap: 0.35rem 0.75rem; margin: 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; word-break: break-word; }
+textarea { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.55rem 0.7rem; font-family: ui-monospace, monospace; font-size: 0.85rem; }
+code { font-family: ui-monospace, monospace; color: var(--muted); word-break: break-all; }
+tr.row-breach td { background: #3a1b1f; }
+.chart-wrap { position: relative; }
+.chart { width: 100%; height: auto; display: block; }
+.chart .grid { stroke: var(--border); stroke-width: 1; }
+.chart .line { fill: none; stroke: #26a17b; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart .dot { fill: #26a17b; stroke: var(--panel); stroke-width: 2; }
+.chart .paused-band { fill: var(--warn); opacity: 0.12; }
+.tooltip { position: absolute; top: 0.25rem; transform: translateX(-50%); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.85rem; pointer-events: none; white-space: nowrap; }

@@ -2,6 +2,9 @@ import { randomBytes } from "node:crypto";
 import { loadConfig } from "../config.js";
 import { hashPassword } from "../lib/password.js";
 import { ensureUserAccounts } from "../ledger/accounts.js";
+import { advanceMarket, latestTick } from "../market/market.js";
+import { runEngine } from "../strategy/engine.js";
+import { allocateCapital, createStrategy } from "../strategy/strategies.js";
 import { migrate } from "./migrate.js";
 import { createPool, withTransaction } from "./pool.js";
 
@@ -91,7 +94,77 @@ try {
     } else {
       console.log(`dev admin ${ADMIN_EMAIL} already exists`);
     }
+    await seedStrategies();
   }
 } finally {
   await db.end();
+}
+
+/**
+ * Demo strategies on SYNTHETIC market data with simulated paper capital.
+ * Created once; then the market is advanced and the engine run so the admin
+ * dashboard has history to show.
+ */
+async function seedStrategies() {
+  const existing = await db.query("SELECT count(*)::int AS n FROM strategies");
+  if (existing.rows[0].n > 0) {
+    console.log("demo strategies already exist");
+    return;
+  }
+  const admin = await db.query<{ id: string }>("SELECT id FROM users WHERE lower(email) = $1", [ADMIN_EMAIL]);
+  const adminId = admin.rows[0]!.id;
+  const btc = await db.query<{ id: string }>("SELECT id FROM market_instruments WHERE symbol = 'SIM-BTC-USDT'");
+  if (!(await latestTick(db, btc.rows[0]!.id))) await advanceMarket(db, 48); // history for lookbacks
+
+  const demos = [
+    {
+      code: "MOMO-BTC",
+      name: "Momentum trader (simulated)",
+      description: "Rules-based momentum: enters after a 24-tick rise above 1.5%, exits after a 1% decline. Paper trading on synthetic data.",
+      type: "trading",
+      instrumentSymbol: "SIM-BTC-USDT",
+      maxAllocation: "100000",
+      maxPositionValue: "40000",
+      maxExposureRatio: "0.6",
+      dailyLossLimit: "2500",
+      maxDrawdownRatio: "0.15",
+      params: { lookbackTicks: 24, entryThresholdBps: 150, exitThresholdBps: -100, targetExposure: "0.5", minTradeValue: "50" },
+      capital: "50000",
+    },
+    {
+      code: "STAKE-ETH",
+      name: "Staking allocator (simulated)",
+      description: "Holds ~80% in a synthetic staked-asset index and rebalances outside a 5% band.",
+      type: "staking",
+      instrumentSymbol: "SIM-ETH-STAKED",
+      maxAllocation: "100000",
+      maxPositionValue: "50000",
+      maxExposureRatio: "0.9",
+      dailyLossLimit: "3000",
+      maxDrawdownRatio: "0.2",
+      params: { targetExposure: "0.8", rebalanceBand: "0.05", minTradeValue: "50" },
+      capital: "50000",
+    },
+    {
+      code: "LEND-USDT",
+      name: "Lending allocator (simulated)",
+      description: "Supplies ~90% to a synthetic lending pool whose index accrues simulated interest, with rare default haircuts.",
+      type: "lending",
+      instrumentSymbol: "SIM-USDT-LENDING",
+      maxAllocation: "100000",
+      maxPositionValue: "60000",
+      maxExposureRatio: "0.95",
+      dailyLossLimit: "1500",
+      maxDrawdownRatio: "0.05",
+      params: { targetExposure: "0.9", rebalanceBand: "0.02", minTradeValue: "50" },
+      capital: "50000",
+    },
+  ];
+  for (const { capital, ...d } of demos) {
+    const id = await createStrategy(db, adminId, d);
+    await allocateCapital(db, { actorUserId: adminId, strategyId: id, amount: capital, idempotencyKey: `seed-allocation-${d.code}` });
+  }
+  await advanceMarket(db, 168); // one simulated week of hourly ticks
+  const run = await runEngine(db, { trigger: "seed", actorUserId: adminId });
+  console.log(`seeded ${demos.length} demo strategies on synthetic data; engine run ${run.status}, ${run.trades} simulated trades`);
 }

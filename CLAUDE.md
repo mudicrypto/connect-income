@@ -7,6 +7,8 @@ Crypto-finance **simulation** platform. Everything is simulated: no real funds, 
   - `migrations/*.sql` — forward-only, numbered. Never edit an applied migration; add a new file.
   - `src/ledger/` — double-entry ledger (the ONLY code that writes postings) + integrity checker.
   - `src/services/` — domain logic (auth, deposits, investments, idempotency, audit).
+  - `src/market/` — SYNTHETIC market data (deterministic generator, append-only ticks).
+  - `src/strategy/` — paper-trading engine: pure math/logic + transactional per-tick engine + management/read models.
   - `src/http/` — routes; thin, no business logic.
   - `test/` — Vitest against a real Postgres `*_test` database.
 - `apps/web` — React + Vite + react-router. Talks to `/api` via the Vite proxy (same origin).
@@ -27,9 +29,16 @@ Crypto-finance **simulation** platform. Everything is simulated: no real funds, 
 9. Authorization: every user route derives the user from the session (`requireUser`); never accept a userId from the client. Admin routes use `requireAdmin`.
 10. Add tests for every financial flow, invariant and authorization rule. `checkLedgerIntegrity()` must report zero problems after every test scenario.
 11. Ask the founder before destructive commands or anything with external side effects.
+12. **Simulation labelling**: instruments must be `SIM-*` with `is_simulated = true` (DB-enforced); every UI surface showing strategy data says "simulated". Never present synthetic prices, trades or P&L as real.
+13. **Strategy money stays in the strategy sub-ledger.** Strategy entries may only touch that strategy's own accounts; a strategy profit never credits a customer. Linking customer principal to strategies needs an explicit design + migration (milestone 3).
+14. **Engine changes must keep processing idempotent and resumable**: one transaction per (strategy, tick), cursor advanced in the same transaction, deterministic journal keys. Decision rules must stay pure and deterministic.
+15. **Risk checks run on the server** inside the tick transaction; the UI only displays them.
+16. SQL gotcha: never `ORDER BY x` when the SELECT list contains `x::text` (sorts as text). Qualify the column (`t.x`).
 
 ## Architecture decisions (short)
 - Postgres enforces ledger invariants with triggers (balanced entries checked as deferred constraints at COMMIT, no overdraft CHECK, immutability), so a bug in app code cannot corrupt the books.
 - Cached balances are updated by the posting trigger under row lock; `balance_after` on each posting gives a running statement.
 - Sessions: opaque random token in an HttpOnly SameSite=Strict cookie; only its SHA-256 is stored.
-- Products carry **no rate**. Maturity currently returns principal only until the strategy engine exists.
+- Products carry **no rate**. Maturity currently returns principal only; strategy P&L is not yet linked to investments.
+- Strategy capital is per-strategy **paper capital** (equity), not customer funds. Realised P&L is booked; unrealised P&L is computed, never booked.
+- Engine: per-tick transaction with strategy row lock + cursor; UNIQUE(strategy, tick) results; crash = rollback of one tick, next run resumes.

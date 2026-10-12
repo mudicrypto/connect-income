@@ -1,6 +1,8 @@
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import { useAuth } from "./auth";
 import { AdminPage } from "./pages/Admin";
+import { AdminStrategiesPage } from "./pages/AdminStrategies";
+import { AdminStrategyPage } from "./pages/AdminStrategy";
 import { DashboardPage } from "./pages/Dashboard";
 import { InvestPage } from "./pages/Invest";
 import { InvestmentsPage } from "./pages/Investments";
@@ -27,7 +29,12 @@ export function App() {
           <NavLink to="/invest">New investment</NavLink>
           <NavLink to="/investments">Investments</NavLink>
           <NavLink to="/transactions">Transactions</NavLink>
-          {user.role === "admin" && <NavLink to="/admin">Admin</NavLink>}
+          {user.role === "admin" && (
+            <NavLink to="/admin" end>
+              Admin
+            </NavLink>
+          )}
+          {user.role === "admin" && <NavLink to="/admin/strategies">Strategies (sim)</NavLink>}
         </nav>
         <div className="user">
           <span className="muted">{user.displayName}</span>
@@ -43,6 +50,8 @@ export function App() {
           <Route path="/investments" element={<InvestmentsPage />} />
           <Route path="/transactions" element={<TransactionsPage />} />
           {user.role === "admin" && <Route path="/admin" element={<AdminPage />} />}
+          {user.role === "admin" && <Route path="/admin/strategies" element={<AdminStrategiesPage />} />}
+          {user.role === "admin" && <Route path="/admin/strategies/:id" element={<AdminStrategyPage />} />}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
