@@ -44,6 +44,10 @@
 - `strategy/logic.ts` — pure decision rules (momentum trading; staking and lending rebalancing) and parameter schemas.
 - `strategy/engine.ts` — processing runs and per-tick transactions, executions, risk monitoring, ledger postings.
 - `strategy/strategies.ts` — strategy management (create, pause, resume, allocate, kill switch) and read models.
+- `rewards/calc.ts` — pure reward calculation (realised P&L, participation, carry-forward, reserve, pro-rata rounding).
+- `rewards/pools.ts` — pools, product→pool assignment history, policies, allocation on investment.
+- `rewards/runs.ts` — reward-run journal: calculate, post (with reconciliation), cancel, release at maturity, statements.
+- `rewards/integrity.ts` — reward invariants used by the integrity checker.
 
 ## Data model
 
@@ -59,6 +63,23 @@
   - `strategy_trades`, `strategy_tick_results` and `strategy_events`: append-only.
   - `strategy_runs`: an operational record.
   - `engine_settings`: the global kill switch.
+
+## Rewards (milestone 3)
+
+The full specification is in [`rewards-accounting.md`](rewards-accounting.md). In short:
+- Investments in pool-backed products get an immutable allocation, a *simulated* participation record. Principal is never moved.
+- An admin calculates a run for a closed period. The calculation reads realised trades, the paper-capital timeline and the allocations, and writes the run and its lines, but no ledger entries.
+- Posting recomputes and reconciles first, then checks pool cash. Only then does it write one two-sided `reward_distribution` entry and, after a loss, a `reward_reserve_release` entry.
+- Rewards sit in `user_reward_pending` until maturity settlement releases them.
+
+Data model additions:
+- `reward_pools`;
+- `product_pool_assignments` (append-only);
+- `pool_allocations` (immutable);
+- `reward_policies` (versioned, immutable);
+- `reward_runs` (calculation fields immutable; status changes only out of `calculated`);
+- `reward_run_lines` (immutable except a one-time release reference);
+- `reward_run_sources` (a trade feeds at most one posted run).
 
 ## Strategy engine (milestone 2)
 

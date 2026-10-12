@@ -18,11 +18,19 @@ Deferred from milestone 2:
 - Force-reducing positions when price drift pushes them over the position or exposure limit.
 - A separate engine worker process with its own DB role.
 
-## Milestone 3: Linking investments to strategies, and rewards
-- Decide and document how fixed-term principal funds strategy pools. Each pool gets its own accounts and allocation entries, keeping customer principal separate from paper capital.
-- Pro-rata reward calculation from realised strategy P&L, using exact decimals and a documented rounding policy (round down, with the remainder kept in a tracked rounding account).
-- `reward_liability` accrual, then payout at maturity. Losses are reflected truthfully.
-- Per-investment performance statements.
+## Milestone 3: Customer allocation, performance accounting and simulated variable rewards ✅
+- Accounting design written first (`rewards-accounting.md`).
+- One pool per product, with append-only assignment history.
+- Customer allocations are immutable simulated participation records, capped by pool capacity and paper capital. Principal is never deployed.
+- Versioned reward policies and the reward-run journal (calculate, review, post or cancel), with reconciliation and failure handling.
+- Distributions come from realised profit only, with fees, loss carry-forward, reserve, pro-rata floor rounding with the residual to the reserve, and a hard cap.
+- Rewards accrue as customer liabilities and are released at maturity. Per-investment statements, and admin and user UIs.
+
+Deferred / open founder decisions:
+- Principal-at-risk model (deploying principal into pools).
+- Performance fee.
+- What happens to a positive reserve at pool closure.
+- Scheduled reward runs.
 
 ## Milestone 4: Admin and risk
 - Admin console: users, products (create/pause), ledger explorer, audit log viewer, integrity dashboard.

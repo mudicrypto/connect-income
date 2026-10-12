@@ -19,11 +19,16 @@ export function DashboardPage() {
     <div className="stack">
       <h2>Dashboard</h2>
       {error && <div className="error">{error}</div>}
-      <div className="grid3">
+      <div className="grid4">
         <Stat label="Available" value={usdt ? `${fmt(usdt.available)} USDT` : "…"} />
         <Stat label="Invested principal" value={usdt ? `${fmt(usdt.invested)} USDT` : "…"} />
+        <Stat label="Rewards pending (simulated)" value={usdt ? `${fmt(usdt.rewardPending, 6)} USDT` : "…"} />
         <Stat label="Total" value={usdt ? `${fmt(usdt.total)} USDT` : "…"} />
       </div>
+      <p className="muted small">
+        Pending rewards come only from realised profit of a simulated strategy pool, are variable (often zero) and are released
+        when the investment matures. They are never guaranteed.
+      </p>
       <div className="grid2">
         <SimulatedDeposit onDone={reload} />
         <div className="card">

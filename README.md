@@ -1,6 +1,6 @@
 # Connect Income
 
-A crypto-finance **simulation** platform. Users can make simulated USDT deposits, open fixed-term investments and review an auditable double-entry ledger. Admins can run a **simulated strategy engine**: paper trading, staking and lending strategies on synthetic market data, with risk controls and per-strategy P&L in the ledger. Later milestones add rewards, a native token and an exchange.
+A crypto-finance **simulation** platform. Users can make simulated USDT deposits, open fixed-term investments and review an auditable double-entry ledger. Admins can run a **simulated strategy engine**: paper trading, staking and lending strategies on synthetic market data, with risk controls and per-strategy P&L in the ledger. Customer investments can participate in simulated strategy pools and receive **variable, never-guaranteed simulated rewards** paid only from realised pool profit (milestone 3). Later milestones add a native token and an exchange.
 
 > ⚠️ Everything is simulated. There are no real funds, wallets, exchanges or blockchain connections. No returns are promised.
 
@@ -27,7 +27,7 @@ docker compose up -d
 
 # 4. Create schema and synthetic seed data (investment products + dev admin)
 npm run migrate
-npm run seed      # prints the dev admin password once (note it down); also creates 3 demo strategies on synthetic data
+npm run seed      # prints the dev admin password once (note it down); creates 3 demo strategies and 2 reward pools
 ```
 
 ## Run
@@ -53,6 +53,12 @@ npm run dev
    - **Engage kill switch**: subsequent runs open no new positions (exits still happen).
    - **Create strategy**: choose a type, a synthetic instrument, limits and parameters (validated on the server).
    - To make the market tick automatically, set `SIM_AUTOTICK_SECONDS=15` in `.env` and restart `npm run dev`.
+8. **Rewards (milestone 3).** FT-30D and the 5-minute dev product participate in pool `MOMO-BTC`. FT-90D participates in `STAKE-ETH`. FT-180D is principal-only.
+   1. As a user, invest in FT-30D. The invest page shows the pool and the variable-reward disclosure.
+   2. As admin, go to Strategies (sim), then **Advance synthetic market & run engine** so the pool trades.
+   3. Then go to **Rewards (sim)** and click **Calculate period ending now**. Review the run (every figure, recipient and source trade), then **Post run to ledger** or **Cancel run**.
+   4. As the user, the dashboard shows **Rewards pending**. On **Investments**, click **Statement** for the per-period breakdown. Rewards move to *Available* when the investment matures; with the 5-minute dev product that's within minutes.
+   5. Many periods pay **nothing**. That happens whenever the pool made a loss, only had unrealised gains, or is still recovering earlier losses. This is intended.
 
 ## Test
 
@@ -66,6 +72,15 @@ The tests cover:
 - deposits, investments, maturity and idempotency;
 - concurrency (no double-spend, exactly-once) and a randomised consistency workload;
 - authentication and authorization.
+
+Reward tests cover:
+- calculations against values checked independently in Python (pro rata, fees, reserve, rounding residual);
+- zero-profit and loss periods, and loss carry-forward;
+- a 300-period identity check that nothing is ever paid twice;
+- the allocation capacity limit under concurrency, and paused pools;
+- the full calculate, post and release-at-maturity cycle;
+- double-post prevention, period contiguity and unique sources;
+- interrupted post, reconciliation failure, insufficient pool cash, and admin-only access.
 
 Strategy-engine tests cover:
 - exact P&L for profitable and losing trades, checked against independently computed values;
@@ -101,6 +116,13 @@ CLAUDE.md    engineering rules and key decisions
 | POST | `/api/admin/engine/run` | admin: process all strategies up to the latest tick (idempotent) |
 | POST | `/api/admin/engine/kill-switch` `{enabled, reason}` | admin |
 | POST | `/api/admin/market/advance` `{ticks}` | admin; requires `Idempotency-Key`; synthetic data only |
+| GET | `/api/investments/:id/rewards` | owner only: per-period simulated reward statement |
+| GET/POST | `/api/admin/rewards/pools` · PATCH `/pools/:id` | admin: list, register, update capacity or status |
+| POST | `/api/admin/rewards/product-assignments` `{productId, poolStrategyId\|null}` | admin |
+| POST | `/api/admin/rewards/policies` `{name, reserveRatio}` | admin: new immutable policy version |
+| GET/POST | `/api/admin/rewards/runs` `{poolStrategyId, periodEnd}` | admin; POST requires `Idempotency-Key`; calculates only, no ledger writes |
+| GET | `/api/admin/rewards/runs/:id` | admin: figures, recipients, source trades |
+| POST | `/api/admin/rewards/runs/:id/post` · `/cancel` | admin |
 
 Amounts are always decimal **strings** (e.g. `"100.50"`).
 
@@ -123,12 +145,21 @@ Amounts are always decimal **strings** (e.g. `"100.50"`).
 - [x] Idempotent, concurrency-safe, crash-recoverable tick processing
 - [x] Risk controls: allocation, position, exposure, daily loss, drawdown, auto-pause with liquidation, global kill switch
 - [x] Admin strategy dashboard (KPI tiles, equity chart, trades, events and breaches); all metrics labelled simulated
-- [x] 70 tests in total (34 new in milestone 2)
+- [x] 70 tests at the end of milestone 2 (34 new in milestone 2)
+- [x] **Milestone 3:** accounting design first (`docs/rewards-accounting.md`)
+- [x] Customer-to-pool allocations: immutable, audited, time-bounded to the investment term, capped by pool capacity and paper capital (race-safe)
+- [x] Versioned reward policies; reward runs with calculate / review / post / cancel, reconciliation on post, and failure handling
+- [x] Rewards from realised profit only, after fees and losses, with reserve, loss carry-forward, pro-rata floor rounding, residual to reserve, and a hard cap
+- [x] Rewards accrue as customer liabilities and are released at maturity; per-investment statement
+- [x] Admin rewards console; user reward visibility; all labelled simulated
+- [x] 93 tests in total (23 new in milestone 3)
 
 ### Next
 - [ ] AI-agent strategy type (plugs into the pure decision-rule interface)
 - [ ] Strategy capital withdrawal, limit editing, force-reduce on limit drift, separate engine worker and DB role
-- [ ] Link investment principal to strategy pools (explicit design + migration), then rewards from realised strategy P&L
+- [ ] Decide reserve policy at pool closure; optional performance fee (new policy version + fee-revenue account)
+- [ ] Principal-at-risk model (actually deploying principal into pools), if the founder wants it, with its own design
+- [ ] Scheduled reward runs (e.g. daily) with admin approval
 - [ ] Admin console: product management, ledger explorer, audit log viewer
 - [ ] Risk management limits and kill switches
 - [ ] Native token (internal ledger asset) and treasury

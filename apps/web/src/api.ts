@@ -8,6 +8,7 @@ export interface Balance {
   asset: string;
   available: string;
   invested: string;
+  rewardPending: string;
   total: string;
 }
 export interface Product {
@@ -22,6 +23,7 @@ export interface Product {
   strategyDescription: string;
   riskDisclosure: string;
   devOnly: boolean;
+  pool: { poolId: string; poolCode: string; poolName: string } | null;
 }
 export interface Investment {
   id: string;
@@ -33,13 +35,16 @@ export interface Investment {
   startAt: string;
   maturityAt: string;
   settledAt: string | null;
+  pool: { code: string; name: string } | null;
+  rewardsPending: string;
+  rewardsReleased: string;
 }
 export interface Transaction {
   postingId: string;
   entryId: string;
   entryType: string;
   description: string;
-  account: "available" | "invested";
+  account: "available" | "invested" | "reward_pending";
   asset: string;
   amount: string;
   balanceAfter: string;
@@ -181,4 +186,83 @@ export function pct(ratio: string, decimals = 2): string {
 /** Signed money display: "+12.34" / "-5.00". */
 export function signed(amount: string, decimals = 2): string {
   return amount.startsWith("-") ? fmt(amount, decimals) : `+${fmt(amount, decimals)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Rewards (SIMULATED)
+// ---------------------------------------------------------------------------
+export interface RewardStatement {
+  investment: { id: string; principal: string; status: string; productName: string; poolCode: string | null; poolName: string | null; allocationAmount: string | null };
+  periods: Array<{
+    runId: string;
+    periodStart: string;
+    periodEnd: string;
+    policyVersion: number;
+    poolNetRealised: string;
+    poolLossCarryForward: string;
+    weightFraction: string;
+    reward: string;
+    releasedAt: string | null;
+  }>;
+}
+export interface RewardPool {
+  id: string;
+  code: string;
+  name: string;
+  strategyStatus: string;
+  status: "active" | "closed";
+  customerCapacity: string;
+  paperCapital: string;
+  reserve: string;
+  distributed: string;
+  activeAllocations: string;
+  allocationCount: number;
+  lossCarryForward: string;
+  lastPeriodEnd: string | null;
+  rewardsStartAt: string;
+  products: Array<{ id: string; code: string; name: string }>;
+}
+export interface RewardPolicy {
+  id: string;
+  version: number;
+  name: string;
+  description: string;
+  reserveRatio: string;
+  createdAt: string;
+}
+export interface RewardRun {
+  id: string;
+  poolId: string;
+  poolCode: string;
+  policyVersion: number;
+  status: "calculated" | "posted" | "cancelled" | "failed";
+  periodStart: string;
+  periodEnd: string;
+  sourceTradeCount: number;
+  grossGains: string;
+  grossLosses: string;
+  fees: string;
+  netRealised: string;
+  customerFraction: string;
+  attributable: string;
+  cfOpen: string;
+  cfRecovered: string;
+  cfClose: string;
+  reserveOpen: string;
+  reserveApplied: string;
+  eligibleProfit: string;
+  reserveContribution: string;
+  roundingResidual: string;
+  distributable: string;
+  totalRewards: string;
+  distributionEntryId: string | null;
+  reserveReleaseEntryId: string | null;
+  error: string | null;
+  createdAt: string;
+  postedAt: string | null;
+}
+export interface RewardRunDetail {
+  run: RewardRun;
+  lines: Array<{ id: string; investmentId: string; userEmail: string; allocationAmount: string; weightFraction: string; reward: string; releasedAt: string | null }>;
+  sources: Array<{ id: string; tickSeq: string; side: string; realisedPnl: string; fee: string; entryId: string }>;
 }

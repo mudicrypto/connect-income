@@ -30,6 +30,13 @@ export function AdminPage() {
           Open strategy dashboard →
         </Link>
       </div>
+      <div className="card">
+        <h3>Rewards (simulated)</h3>
+        <p className="muted small">Reward pools, product assignments, policies, and the reward journal (calculate, review, post).</p>
+        <Link className="button" to="/admin/rewards">
+          Open rewards console →
+        </Link>
+      </div>
       {error && <div className="error">{error}</div>}
       <div className="card">
         <div className="row spread">

@@ -5,6 +5,7 @@ import { ensureUserAccounts } from "../ledger/accounts.js";
 import { advanceMarket, latestTick } from "../market/market.js";
 import { runEngine } from "../strategy/engine.js";
 import { allocateCapital, createStrategy } from "../strategy/strategies.js";
+import { assignProductToPool, registerPool } from "../rewards/pools.js";
 import { migrate } from "./migrate.js";
 import { createPool, withTransaction } from "./pool.js";
 
@@ -95,6 +96,7 @@ try {
       console.log(`dev admin ${ADMIN_EMAIL} already exists`);
     }
     await seedStrategies();
+    await seedRewardPools();
   }
 } finally {
   await db.end();
@@ -167,4 +169,32 @@ async function seedStrategies() {
   await advanceMarket(db, 168); // one simulated week of hourly ticks
   const run = await runEngine(db, { trigger: "seed", actorUserId: adminId });
   console.log(`seeded ${demos.length} demo strategies on synthetic data; engine run ${run.status}, ${run.trades} simulated trades`);
+}
+
+/**
+ * Demo reward pools (SIMULATED): products participate in strategy pools;
+ * FT-180D stays principal-only to show the contrast.
+ */
+async function seedRewardPools() {
+  const existing = await db.query("SELECT count(*)::int AS n FROM reward_pools");
+  if (existing.rows[0].n > 0) {
+    console.log("reward pools already exist");
+    return;
+  }
+  const admin = await db.query<{ id: string }>("SELECT id FROM users WHERE lower(email) = $1", [ADMIN_EMAIL]);
+  const adminId = admin.rows[0]!.id;
+  const ids = async (table: string, codes: string[]) =>
+    new Map((await db.query<{ id: string; code: string }>(`SELECT id, code FROM ${table} WHERE code = ANY($1)`, [codes])).rows.map((r) => [r.code, r.id]));
+  const strategies = await ids("strategies", ["MOMO-BTC", "STAKE-ETH"]);
+  const products = await ids("investment_products", ["FT-30D", "FT-90D", "DEV-5MIN"]);
+  if (strategies.size < 2 || products.size < 3) {
+    console.log("skipping reward pools: demo strategies/products missing");
+    return;
+  }
+  await registerPool(db, adminId, { strategyId: strategies.get("MOMO-BTC")!, customerCapacity: "25000" });
+  await registerPool(db, adminId, { strategyId: strategies.get("STAKE-ETH")!, customerCapacity: "25000" });
+  for (const [product, strategy] of [["FT-30D", "MOMO-BTC"], ["DEV-5MIN", "MOMO-BTC"], ["FT-90D", "STAKE-ETH"]] as const) {
+    await assignProductToPool(db, adminId, { productId: products.get(product)!, poolStrategyId: strategies.get(strategy)!, reason: "seed" });
+  }
+  console.log("seeded 2 simulated reward pools (MOMO-BTC: FT-30D, DEV-5MIN; STAKE-ETH: FT-90D); FT-180D is principal-only");
 }

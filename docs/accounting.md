@@ -77,7 +77,9 @@ Exposed at `GET /api/admin/ledger/integrity` (admin only) and asserted in tests.
 - Journal entries: unique deterministic keys, e.g. `simulated_deposit:<user>:<key>`, `investment:<id>:open`, `investment:<id>:mature`, `strategy_capital:<strategy>:<key>`, `strategy_trade:<strategy>:<tick>:<n>`.
 - Strategy processing: `UNIQUE(strategy_id, tick_id)` on `strategy_tick_results` plus the cursor guarantee each market tick is processed at most once per strategy.
 
-## Rewards (future, rules fixed now)
+## Rewards
+
+**Implemented in milestone 3. The authoritative specification is [`rewards-accounting.md`](rewards-accounting.md).** It covers the account purposes `strategy_distributions`, `pool_reserve` and `user_reward_pending`, the formulas, and the entries for distribution, reserve release and release at maturity. The original rules below still hold.
 - Products carry **no promised rate**.
 - Strategy P&L is now recorded in each strategy's sub-ledger (milestone 2). Rewards are then allocated pro rata from **realised** P&L into `reward_liability`, and paid to users from there. Losses are recorded truthfully. Platform fees are separate revenue accounts.
 - Nothing may credit a user without a balancing debit from an account that actually holds the value.

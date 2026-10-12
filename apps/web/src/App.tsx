@@ -1,6 +1,8 @@
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import { useAuth } from "./auth";
 import { AdminPage } from "./pages/Admin";
+import { AdminRewardRunPage } from "./pages/AdminRewardRun";
+import { AdminRewardsPage } from "./pages/AdminRewards";
 import { AdminStrategiesPage } from "./pages/AdminStrategies";
 import { AdminStrategyPage } from "./pages/AdminStrategy";
 import { DashboardPage } from "./pages/Dashboard";
@@ -35,6 +37,7 @@ export function App() {
             </NavLink>
           )}
           {user.role === "admin" && <NavLink to="/admin/strategies">Strategies (sim)</NavLink>}
+          {user.role === "admin" && <NavLink to="/admin/rewards">Rewards (sim)</NavLink>}
         </nav>
         <div className="user">
           <span className="muted">{user.displayName}</span>
@@ -52,6 +55,8 @@ export function App() {
           {user.role === "admin" && <Route path="/admin" element={<AdminPage />} />}
           {user.role === "admin" && <Route path="/admin/strategies" element={<AdminStrategiesPage />} />}
           {user.role === "admin" && <Route path="/admin/strategies/:id" element={<AdminStrategyPage />} />}
+          {user.role === "admin" && <Route path="/admin/rewards" element={<AdminRewardsPage />} />}
+          {user.role === "admin" && <Route path="/admin/rewards/runs/:id" element={<AdminRewardRunPage />} />}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

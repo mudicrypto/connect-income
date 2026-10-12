@@ -33,6 +33,15 @@ Simulation only. No real funds, private keys, exchange API keys or mainnet contr
 - Risk limits are enforced on the server inside the tick transaction. The UI only displays them.
 - Server-side validation of strategy parameters is strict (unknown keys rejected); amounts must be decimal strings.
 
+## Rewards (milestone 3)
+- Every pool, assignment, policy and run route is admin-only. Investors can read only their own reward statement (404 for anyone else's). Tests cover all of these.
+- Every pool, assignment, policy and run action, and every allocation, is written to `audit_logs`.
+- A run cannot be posted twice:
+  - the run's row lock and its status check reject a second post;
+  - per-run journal idempotency keys block a double posting at the ledger level;
+  - `UNIQUE (pool, period_start) WHERE status = 'posted'` and unique trade sources mean a period or a trade can never be paid twice.
+- Posting recomputes the period and refuses to post if the source data changed.
+
 ## Future AI agents
 - AI agent strategies will plug in as decision rules with the same interface as `strategy/logic.ts`: they receive market data and their own state and return a desired position. They never call the ledger or the database directly.
 - They will run in a separate process or worker with its own DB role, which can only write through the engine's service API.

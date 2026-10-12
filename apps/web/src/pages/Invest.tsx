@@ -68,8 +68,19 @@ export function InvestPage() {
               <dd>{product.strategyDescription}</dd>
               <dt>Return</dt>
               <dd>
-                <strong>Not guaranteed.</strong> Rewards will be calculated from actual simulated strategy performance
-                (strategy engine not yet live — currently principal only).
+                {product.pool ? (
+                  <>
+                    <strong>Variable, not guaranteed.</strong> This product participates in the simulated strategy pool{" "}
+                    <strong>{product.pool.poolCode}</strong>. Rewards are paid only from that pool's <em>realised</em> simulated
+                    profit after fees, a reserve and any earlier losses, pro rata to your allocation and time invested. Many
+                    periods pay nothing. Your principal stays in your account and is returned at maturity. It is not invested
+                    anywhere: participation is simulated.
+                  </>
+                ) : (
+                  <>
+                    <strong>Principal only.</strong> This product is not linked to a strategy pool, so it earns no rewards.
+                  </>
+                )}
               </dd>
             </dl>
             <div className="warning small">{product.riskDisclosure}</div>

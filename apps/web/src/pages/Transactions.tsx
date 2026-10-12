@@ -5,7 +5,10 @@ const TYPE_LABELS: Record<string, string> = {
   simulated_deposit: "Simulated deposit",
   investment_open: "Investment opened",
   investment_mature: "Investment matured",
+  reward_distribution: "Reward accrued (simulated)",
+  reward_release: "Reward released (simulated)",
 };
+const ACCOUNT_LABELS: Record<string, string> = { available: "Available", invested: "Invested", reward_pending: "Rewards pending" };
 
 export function TransactionTable({ items }: { items: Transaction[] }) {
   if (items.length === 0) return <p className="muted">No transactions yet.</p>;
@@ -25,7 +28,7 @@ export function TransactionTable({ items }: { items: Transaction[] }) {
           <tr key={t.postingId}>
             <td>{fmtDate(t.createdAt)}</td>
             <td title={t.description}>{TYPE_LABELS[t.entryType] ?? t.entryType}</td>
-            <td>{t.account === "available" ? "Available" : "Invested"}</td>
+            <td>{ACCOUNT_LABELS[t.account] ?? t.account}</td>
             <td className={`num ${t.amount.startsWith("-") ? "neg" : "pos"}`}>
               {t.amount.startsWith("-") ? "" : "+"}
               {fmt(t.amount, 6)} {t.asset}
