@@ -10,7 +10,10 @@ export type AccountPurpose =
   | "strategy_position"
   | "strategy_realised_gain"
   | "strategy_realised_loss"
-  | "strategy_fees";
+  | "strategy_fees"
+  | "strategy_distributions"
+  | "pool_reserve"
+  | "user_reward_pending";
 export type Direction = "debit" | "credit";
 
 type OwnerKind = "user" | "strategy" | "platform";
@@ -43,6 +46,15 @@ export const PURPOSES: Record<AccountPurpose, PurposeSpec> = {
   strategy_realised_gain: { category: "revenue", normalBalance: "credit", owner: "strategy", label: "Realised simulated gains" },
   strategy_realised_loss: { category: "expense", normalBalance: "debit", owner: "strategy", label: "Realised simulated losses" },
   strategy_fees: { category: "expense", normalBalance: "debit", owner: "strategy", label: "Simulated trading fees" },
+  strategy_distributions: {
+    category: "equity",
+    normalBalance: "debit",
+    owner: "strategy",
+    label: "Realised profit distributed to customers (contra-equity)",
+  },
+  // Owned by a pool (strategy id) but on the CUSTOMER side, not in the strategy sub-ledger.
+  pool_reserve: { category: "liability", normalBalance: "credit", owner: "strategy", label: "Customer pool reserve" },
+  user_reward_pending: { category: "liability", normalBalance: "credit", owner: "user", label: "Pending rewards" },
 };
 
 export interface AssetInfo {
@@ -117,6 +129,7 @@ export interface StrategyAccounts {
   gain: string;
   loss: string;
   fees: string;
+  distributions: string;
 }
 
 export async function ensureStrategyAccounts(tx: Tx, strategyId: string, asset: string): Promise<StrategyAccounts> {
@@ -128,6 +141,7 @@ export async function ensureStrategyAccounts(tx: Tx, strategyId: string, asset: 
     gain: await ensureAccount(tx, "strategy_realised_gain", asset, owner),
     loss: await ensureAccount(tx, "strategy_realised_loss", asset, owner),
     fees: await ensureAccount(tx, "strategy_fees", asset, owner),
+    distributions: await ensureAccount(tx, "strategy_distributions", asset, owner),
   };
 }
 

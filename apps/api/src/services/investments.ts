@@ -6,6 +6,8 @@ import { ensureUserAccounts, getAsset, lockAccounts } from "../ledger/accounts.j
 import { postEntry } from "../ledger/ledger.js";
 import { audit } from "./audit.js";
 import { runIdempotent } from "./idempotency.js";
+import { allocateInvestmentToPool, productPools } from "../rewards/pools.js";
+import { releaseInvestmentRewards } from "../rewards/runs.js";
 
 export interface ProductView {
   id: string;
@@ -20,6 +22,8 @@ export interface ProductView {
   riskDisclosure: string;
   devOnly: boolean;
   status: string;
+  /** Simulated strategy pool backing variable rewards, if any. */
+  pool: { poolId: string; poolCode: string; poolName: string } | null;
 }
 
 interface ProductRow {
@@ -55,6 +59,7 @@ function toProductView(r: ProductRow): ProductView {
     riskDisclosure: r.risk_disclosure,
     devOnly: r.dev_only,
     status: r.status,
+    pool: null,
   };
 }
 
@@ -65,7 +70,8 @@ export async function listProducts(db: Db, opts: { includeDevOnly: boolean }): P
       ORDER BY p.term_minutes, p.code`,
     [opts.includeDevOnly],
   );
-  return rows.map(toProductView);
+  const pools = await productPools(db);
+  return rows.map((r) => ({ ...toProductView(r), pool: pools.get(r.id) ?? null }));
 }
 
 export interface InvestmentView {
@@ -81,12 +87,23 @@ export interface InvestmentView {
   settledAt: string | null;
   openEntryId: string;
   settleEntryId: string | null;
+  /** Simulated pool participation and variable rewards (null if the product has no pool). */
+  pool: { code: string; name: string } | null;
+  rewardsPending: string;
+  rewardsReleased: string;
 }
 
 const INVESTMENT_SELECT = `
   SELECT i.id, i.product_id, p.code AS product_code, p.name AS product_name, i.asset, i.principal::text,
-         i.status, i.start_at, i.maturity_at, i.settled_at, i.open_entry_id, i.settle_entry_id, a.scale
+         i.status, i.start_at, i.maturity_at, i.settled_at, i.open_entry_id, i.settle_entry_id, a.scale,
+         ps.code AS pool_code, ps.name AS pool_name,
+         COALESCE((SELECT sum(l.reward) FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
+                    WHERE l.investment_id = i.id AND r.status = 'posted' AND l.released_entry_id IS NULL), 0)::text AS rewards_pending,
+         COALESCE((SELECT sum(l.reward) FROM reward_run_lines l
+                    WHERE l.investment_id = i.id AND l.released_entry_id IS NOT NULL), 0)::text AS rewards_released
     FROM investments i
+    LEFT JOIN pool_allocations pa ON pa.investment_id = i.id
+    LEFT JOIN strategies ps ON ps.id = pa.pool_strategy_id
     JOIN investment_products p ON p.id = i.product_id
     JOIN assets a ON a.code = i.asset`;
 
@@ -104,6 +121,10 @@ interface InvestmentRow {
   open_entry_id: string;
   settle_entry_id: string | null;
   scale: number;
+  pool_code: string | null;
+  pool_name: string | null;
+  rewards_pending: string;
+  rewards_released: string;
 }
 
 function toInvestmentView(r: InvestmentRow): InvestmentView {
@@ -120,6 +141,9 @@ function toInvestmentView(r: InvestmentRow): InvestmentView {
     settledAt: r.settled_at?.toISOString() ?? null,
     openEntryId: r.open_entry_id,
     settleEntryId: r.settle_entry_id,
+    pool: r.pool_code ? { code: r.pool_code, name: r.pool_name! } : null,
+    rewardsPending: format(r.rewards_pending, r.scale),
+    rewardsReleased: format(r.rewards_released, r.scale),
   };
 }
 
@@ -215,6 +239,15 @@ export async function createInvestment(
            VALUES ($1, $2, $3, $4, $5, now(), now() + make_interval(mins => $6), $7)`,
           [investmentId, input.userId, product.id, asset.code, amount.toFixed(), product.term_minutes, entryId],
         );
+        // Simulated pool participation (if the product is assigned to a pool);
+        // enforces pool status/capacity and rolls everything back on failure.
+        await allocateInvestmentToPool(tx, {
+          investmentId,
+          userId: input.userId,
+          productId: product.id,
+          principal: amount,
+          ip: input.ip,
+        });
         const created = await tx.query<InvestmentRow>(`${INVESTMENT_SELECT} WHERE i.id = $1`, [investmentId]);
         const view = toInvestmentView(created.rows[0]!);
 
@@ -237,8 +270,8 @@ export async function createInvestment(
  * returns to the user's available balance.
  *   Dr user_invested
  *   Cr user_available
- * Rewards are intentionally NOT paid here: they must come from realised
- * strategy performance, which arrives in a later milestone.
+ * Rewards are never created here: only rewards already calculated from
+ * realised pool profit and posted by a reward run are released.
  *
  * Each investment settles in its own transaction and is idempotent
  * (journal key `investment:<id>:mature`), so the sweep can run concurrently
@@ -282,12 +315,14 @@ export async function settleMaturedInvestments(
         `UPDATE investments SET status = 'matured', settle_entry_id = $2, settled_at = now() WHERE id = $1`,
         [id, entryId],
       );
+      // Rewards already posted for this investment become available now.
+      const releasedLines = await releaseInvestmentRewards(tx, id, opts.actorUserId ?? null);
       await audit(tx, {
         actorUserId: opts.actorUserId ?? null,
         action: "investment.mature",
         targetType: "investment",
         targetId: id,
-        details: { principal: inv.principal },
+        details: { principal: inv.principal, releasedRewardLines: releasedLines },
       });
       return true;
     });

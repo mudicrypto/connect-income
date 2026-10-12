@@ -4,6 +4,7 @@ import { simulatedDeposit } from "../../services/deposits.js";
 import { validateIdempotencyKey } from "../../services/idempotency.js";
 import { createInvestment, listInvestments, listProducts } from "../../services/investments.js";
 import { listTransactions } from "../../services/transactions.js";
+import { investmentRewardStatement } from "../../rewards/runs.js";
 import { requireUser, type AppDeps } from "../app.js";
 
 export const userRoutes =
@@ -67,6 +68,12 @@ export const userRoutes =
       });
       reply.header("Idempotent-Replayed", String(result.replayed));
       return reply.status(result.statusCode).send(result.body);
+    });
+
+    // Per-investment performance statement (owner only; SIMULATED rewards).
+    app.get("/investments/:id/rewards", async (req) => {
+      const user = requireUser(req);
+      return investmentRewardStatement(db, user.id, (req.params as { id: string }).id);
     });
 
     app.get("/transactions", async (req) => {

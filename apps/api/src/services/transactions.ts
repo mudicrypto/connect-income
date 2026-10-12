@@ -6,7 +6,7 @@ export interface TransactionView {
   entryId: string;
   entryType: string;
   description: string;
-  account: "available" | "invested";
+  account: "available" | "invested" | "reward_pending";
   asset: string;
   /** Signed change from the user's point of view: positive = balance increased. */
   amount: string;
@@ -62,7 +62,7 @@ export async function listTransactions(
       entryId: r.entry_id,
       entryType: r.entry_type,
       description: r.description,
-      account: r.purpose === "user_invested" ? "invested" : "available",
+      account: r.purpose === "user_invested" ? "invested" : r.purpose === "user_reward_pending" ? "reward_pending" : "available",
       asset: r.asset,
       amount: (r.direction === r.normal_balance ? "" : "-") + format(r.amount, r.scale),
       balanceAfter: format(r.balance_after, r.scale),

@@ -7,7 +7,10 @@ export type EntryType =
   | "investment_open"
   | "investment_mature"
   | "strategy_capital_allocation"
-  | "strategy_trade";
+  | "strategy_trade"
+  | "reward_distribution"
+  | "reward_reserve_release"
+  | "reward_release";
 
 export interface PostingInput {
   accountId: string;

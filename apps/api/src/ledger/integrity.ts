@@ -1,5 +1,6 @@
 import type { Db, Tx } from "../db/pool.js";
 import { Money } from "../lib/money.js";
+import { rewardIntegrityProblems } from "../rewards/integrity.js";
 
 export interface IntegrityReport {
   ok: boolean;
@@ -90,7 +91,8 @@ export async function checkLedgerIntegrity(db: Db | Tx): Promise<IntegrityReport
            COALESCE(sum(la.balance) FILTER (WHERE la.normal_balance = 'credit'), 0)::text AS credit_side,
            s.last_tick_seq::text AS cursor,
            (SELECT max(tick_seq) FROM strategy_tick_results r WHERE r.strategy_id = s.id)::text AS last_result
-      FROM strategies s LEFT JOIN ledger_accounts la ON la.owner_strategy_id = s.id
+      FROM strategies s
+      LEFT JOIN ledger_accounts la ON la.owner_strategy_id = s.id AND la.purpose LIKE 'strategy\\_%'
      GROUP BY s.id`);
   for (const r of strat.rows) {
     const eq = (a: string, b: string) => new Money(a).eq(b);
@@ -102,14 +104,27 @@ export async function checkLedgerIntegrity(db: Db | Tx): Promise<IntegrityReport
     if (r.last_result !== null && r.last_result !== r.cursor) problems.push(`strategy ${r.code}: cursor ${r.cursor} != last tick result ${r.last_result}`);
   }
 
-  // Strategy postings must never touch customer accounts, and vice versa.
-  const crossed = await db.query<{ entry_id: string }>(`
-    SELECT p.entry_id FROM ledger_postings p
+  // Strategy sub-ledger postings must never be mixed with other accounts,
+  // except in the two reward entry types, whose strategy half and customer
+  // half must each balance on their own (docs/rewards-accounting.md section 4).
+  const crossed = await db.query<{ entry_id: string; entry_type: string; strat_net: string; other_net: string }>(`
+    SELECT p.entry_id, e.entry_type,
+           sum(CASE WHEN a.purpose LIKE 'strategy\\_%' THEN (CASE WHEN p.direction = 'debit' THEN p.amount ELSE -p.amount END) ELSE 0 END)::text AS strat_net,
+           sum(CASE WHEN a.purpose NOT LIKE 'strategy\\_%' THEN (CASE WHEN p.direction = 'debit' THEN p.amount ELSE -p.amount END) ELSE 0 END)::text AS other_net
+      FROM ledger_postings p
       JOIN journal_entries e ON e.id = p.entry_id
       JOIN ledger_accounts a ON a.id = p.account_id
-     GROUP BY p.entry_id
-    HAVING bool_or(a.owner_strategy_id IS NOT NULL) AND bool_or(a.owner_strategy_id IS NULL)`);
-  for (const r of crossed.rows) problems.push(`entry ${r.entry_id} mixes strategy and non-strategy accounts`);
+     GROUP BY p.entry_id, e.entry_type
+    HAVING bool_or(a.purpose LIKE 'strategy\\_%') AND bool_or(a.purpose NOT LIKE 'strategy\\_%')`);
+  for (const r of crossed.rows) {
+    if (r.entry_type !== "reward_distribution" && r.entry_type !== "reward_reserve_release") {
+      problems.push(`entry ${r.entry_id} (${r.entry_type}) mixes strategy and non-strategy accounts`);
+    } else if (!new Money(r.strat_net).isZero() || !new Money(r.other_net).isZero()) {
+      problems.push(`reward entry ${r.entry_id}: strategy half (${r.strat_net}) or customer half (${r.other_net}) is unbalanced`);
+    }
+  }
+
+  problems.push(...(await rewardIntegrityProblems(db)));
 
   const tb = await db.query<{ asset: string; debit_total: string; credit_total: string }>(`
     SELECT asset,

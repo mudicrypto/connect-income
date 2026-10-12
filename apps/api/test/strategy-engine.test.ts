@@ -50,6 +50,7 @@ describe("paper trading P&L", () => {
       strategy_realised_gain: "146.911911",
       strategy_realised_loss: "0",
       strategy_fees: "10.136922",
+      strategy_distributions: "0",
     });
     const { strategy } = await getStrategyDetail(db, id);
     expect(strategy).toMatchObject({
@@ -75,6 +76,7 @@ describe("paper trading P&L", () => {
       strategy_realised_gain: "0",
       strategy_realised_loss: "342.794461",
       strategy_fees: "9.647216",
+      strategy_distributions: "0",
     });
     await expectLedgerOk();
   });

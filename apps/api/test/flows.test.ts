@@ -21,7 +21,7 @@ describe("simulated deposit", () => {
     const res = await fund(db, user.id, "1000.25");
     expect(res.statusCode).toBe(201);
     expect(res.body.availableBalance).toBe("1000.250000");
-    expect(await usdt(user.id)).toEqual({ asset: "USDT", available: "1000.250000", invested: "0.000000", total: "1000.250000" });
+    expect(await usdt(user.id)).toEqual({ asset: "USDT", available: "1000.250000", invested: "0.000000", rewardPending: "0.000000", total: "1000.250000" });
     await expectLedgerOk();
   });
 
@@ -75,7 +75,7 @@ describe("fixed-term investments", () => {
     expect(inv.status).toBe("active");
     const termMs = new Date(inv.maturityAt).getTime() - new Date(inv.startAt).getTime();
     expect(termMs).toBe(30 * 86400_000);
-    expect(await usdt(user.id)).toEqual({ asset: "USDT", available: "299.500000", invested: "200.500000", total: "500.000000" });
+    expect(await usdt(user.id)).toEqual({ asset: "USDT", available: "299.500000", invested: "200.500000", rewardPending: "0.000000", total: "500.000000" });
 
     const tx = await listTransactions(db, user.id);
     // Newest entry first; legs within one entry have no meaningful order.
@@ -162,7 +162,7 @@ describe("fixed-term investments", () => {
     expect(settled!.status).toBe("matured");
     expect(settled!.settleEntryId).not.toBeNull();
     // Principal only: no reward is paid until strategy performance exists.
-    expect(await usdt(user.id)).toEqual({ asset: "USDT", available: "300.000000", invested: "0.000000", total: "300.000000" });
+    expect(await usdt(user.id)).toEqual({ asset: "USDT", available: "300.000000", invested: "0.000000", rewardPending: "0.000000", total: "300.000000" });
     await expectLedgerOk();
   });
 

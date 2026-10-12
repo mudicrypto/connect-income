@@ -8,6 +8,7 @@ import { AppError, forbidden, unauthorized } from "../lib/errors.js";
 import { getSessionUser, type SessionUser } from "../services/auth.js";
 import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
+import { rewardAdminRoutes } from "./routes/rewards.js";
 import { strategyRoutes } from "./routes/strategies.js";
 import { userRoutes } from "./routes/user.js";
 
@@ -62,6 +63,7 @@ export async function buildApp(deps: AppDeps, opts: { logger?: boolean } = {}): 
   await app.register(userRoutes(deps), { prefix: "/api" });
   await app.register(adminRoutes(deps), { prefix: "/api/admin" });
   await app.register(strategyRoutes(deps), { prefix: "/api/admin" });
+  await app.register(rewardAdminRoutes(deps), { prefix: "/api/admin/rewards" });
   return app;
 }
 

@@ -264,6 +264,7 @@ interface MetricsRow {
   gain: string;
   loss: string;
   fees: string;
+  distributions: string;
   quantity: string;
   trade_count: number;
   breach_count: number;
@@ -284,6 +285,7 @@ export async function strategyMetrics(db: Db | Tx, ids?: string[]) {
             COALESCE(sum(la.balance) FILTER (WHERE la.purpose = 'strategy_realised_gain'), 0)::text AS gain,
             COALESCE(sum(la.balance) FILTER (WHERE la.purpose = 'strategy_realised_loss'), 0)::text AS loss,
             COALESCE(sum(la.balance) FILTER (WHERE la.purpose = 'strategy_fees'), 0)::text AS fees,
+            COALESCE(sum(la.balance) FILTER (WHERE la.purpose = 'strategy_distributions'), 0)::text AS distributions,
             COALESCE((SELECT quantity FROM strategy_positions p WHERE p.strategy_id = s.id AND p.instrument_id = s.instrument_id), 0)::text AS quantity,
             (SELECT count(*)::int FROM strategy_trades st WHERE st.strategy_id = s.id) AS trade_count,
             (SELECT count(*)::int FROM strategy_events se WHERE se.strategy_id = s.id AND se.event_type = 'risk_breach') AS breach_count,
@@ -312,6 +314,7 @@ export async function strategyMetrics(db: Db | Tx, ids?: string[]) {
     const fees = fromDb(r.fees);
     const unrealised = positionValue.minus(cost);
     const peak = Money.max(fromDb(r.peak_equity), equity);
+    const distributed = fromDb(r.distributions);
     return {
       id: r.id,
       code: r.code,
@@ -347,7 +350,9 @@ export async function strategyMetrics(db: Db | Tx, ids?: string[]) {
       realisedPnl: f(realised),
       fees: f(fees),
       unrealisedPnl: f(unrealised),
-      netPnl: f(equity.minus(capital)),
+      // Profit swept out to customers is still profit the strategy made.
+      netPnl: f(equity.plus(distributed).minus(capital)),
+      distributedToCustomers: f(distributed),
       exposureRatio: equity.gt(0) ? positionValue.div(equity).toFixed(6) : "0.000000",
       peakEquity: f(peak),
       drawdownRatio: drawdownRatio(peak, equity).toFixed(6),
