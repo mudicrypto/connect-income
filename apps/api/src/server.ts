@@ -2,7 +2,9 @@ import { loadConfig } from "./config.js";
 import { migrate } from "./db/migrate.js";
 import { createPool } from "./db/pool.js";
 import { buildApp } from "./http/app.js";
+import { advanceMarket } from "./market/market.js";
 import { settleMaturedInvestments } from "./services/investments.js";
+import { runEngine } from "./strategy/engine.js";
 
 const config = loadConfig();
 const db = createPool(config.databaseUrl);
@@ -26,8 +28,30 @@ const timer = setInterval(async () => {
   }
 }, config.maturitySweepIntervalMs);
 
+// Optional simulated market clock: append one synthetic tick per instrument
+// and run the strategy engine. Disabled unless SIM_AUTOTICK_SECONDS > 0.
+let simTimer: NodeJS.Timeout | undefined;
+if (config.simAutoTickSeconds > 0) {
+  let ticking = false;
+  simTimer = setInterval(async () => {
+    if (ticking) return;
+    ticking = true;
+    try {
+      await advanceMarket(db, 1);
+      const run = await runEngine(db, { trigger: "scheduler" });
+      if (run.status === "failed") app.log.error({ run }, "simulated strategy engine run failed");
+    } catch (err) {
+      app.log.error(err, "simulated market tick failed");
+    } finally {
+      ticking = false;
+    }
+  }, config.simAutoTickSeconds * 1000);
+  app.log.info(`simulated market auto-tick every ${config.simAutoTickSeconds}s (SYNTHETIC DATA)`);
+}
+
 const shutdown = async () => {
   clearInterval(timer);
+  if (simTimer) clearInterval(simTimer);
   await app.close();
   await db.end();
   process.exit(0);

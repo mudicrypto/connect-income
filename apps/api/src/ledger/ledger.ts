@@ -2,7 +2,12 @@ import type { Tx } from "../db/pool.js";
 import { Money, type Money as MoneyT } from "../lib/money.js";
 import type { Direction } from "./accounts.js";
 
-export type EntryType = "simulated_deposit" | "investment_open" | "investment_mature";
+export type EntryType =
+  | "simulated_deposit"
+  | "investment_open"
+  | "investment_mature"
+  | "strategy_capital_allocation"
+  | "strategy_trade";
 
 export interface PostingInput {
   accountId: string;

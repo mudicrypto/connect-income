@@ -8,6 +8,7 @@ import { AppError, forbidden, unauthorized } from "../lib/errors.js";
 import { getSessionUser, type SessionUser } from "../services/auth.js";
 import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
+import { strategyRoutes } from "./routes/strategies.js";
 import { userRoutes } from "./routes/user.js";
 
 export const SESSION_COOKIE = "ci_session";
@@ -60,6 +61,7 @@ export async function buildApp(deps: AppDeps, opts: { logger?: boolean } = {}): 
   await app.register(authRoutes(deps), { prefix: "/api/auth" });
   await app.register(userRoutes(deps), { prefix: "/api" });
   await app.register(adminRoutes(deps), { prefix: "/api/admin" });
+  await app.register(strategyRoutes(deps), { prefix: "/api/admin" });
   return app;
 }
 

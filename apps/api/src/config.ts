@@ -16,6 +16,8 @@ export interface Config {
   cookieSecure: boolean;
   sessionTtlHours: number;
   maturitySweepIntervalMs: number;
+  /** Seconds between automatic synthetic market ticks + engine runs; 0 disables. */
+  simAutoTickSeconds: number;
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {
@@ -26,5 +28,6 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     cookieSecure: overrides.cookieSecure ?? bool(process.env.COOKIE_SECURE, false),
     sessionTtlHours: overrides.sessionTtlHours ?? 24 * 7,
     maturitySweepIntervalMs: overrides.maturitySweepIntervalMs ?? 30_000,
+    simAutoTickSeconds: overrides.simAutoTickSeconds ?? Math.max(0, Number(process.env.SIM_AUTOTICK_SECONDS ?? 0) || 0),
   };
 }
