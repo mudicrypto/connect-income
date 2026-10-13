@@ -38,7 +38,7 @@ Deferred / open founder decisions:
 - Reserves are owned per investment and absorb that investment's own losses. They are returned only by an approved final settlement after maturity, never by pool closure. Pool states: open, closed (settling), closed (settled).
 - Forward-only migration that rewrites no history. Legacy pools with pool-level balances stay on v1 until the founder decides.
 
-Open founder decision: the transition option for legacy pools with balances (A attribute pro rata, B expire the legacy carry-forward, C run off).
+Legacy transition: the founder chose Option A (attribute the legacy carry-forward to the responsible investment). It is implemented with DB-enforced reconciliation, and the runbook is `docs/runbooks/legacy-pool-transition.md`. It has not yet been applied to MOMO-BTC in dev (founder decision). Ambiguous or reserve-holding legacy pools still need a decision.
 
 ## Milestone 4: Admin and risk
 - Admin console: users, products (create/pause), ledger explorer, audit log viewer, integrity dashboard.

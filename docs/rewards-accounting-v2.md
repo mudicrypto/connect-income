@@ -176,16 +176,55 @@ Migration `0007` is forward-only and **rewrites no historical row**:
   default to `daily_utc`, and the mode can be switched by an admin (audited).
 - New pools always start on `investment_v2`.
 
-**Options for `transition_required` pools (founder decision, not implemented):**
+**Options for `transition_required` pools:**
 
 | Option | Effect | Trade-off |
 |---|---|---|
-| A. Attribute pro rata | Split the legacy CF and reserve across allocations by their participation weights in the legacy runs that created them | Deterministic, but an approximation, since v1 never recorded per-investor shares |
+| A. Attribute to the responsible investment(s) | Charge the legacy CF to the allocation(s) that participated in the v1 runs that created it | Exact when one investment is responsible; anything else is ambiguous and aborts |
 | B. Expire legacy CF, keep legacy reserve pool-level | New model starts at L = 0; the legacy reserve stays a separate, frozen customer liability awaiting its own decision | Investors who had losses under v1 are no longer charged for them; simple |
 | C. Let it run off | Stay on v1 until the legacy CF and reserve reach 0 naturally, then switch automatically | No reinterpretation at all; the unfairness persists until then |
 
-In the current dev database, `MOMO-BTC` has a legacy carry-forward of 15.174414 from a single
-investment. It is therefore `transition_required`.
+### 7.1 Option A (founder decision 2026-10-12, implemented in migration `0008`)
+
+The runbook is `docs/runbooks/legacy-pool-transition.md`; the code is `src/rewards/legacy-transition.ts`.
+
+- **Scope.** Applies only when the pool's v1 reserve is 0. Under v1, a positive CF and a
+  positive reserve cannot coexist, because the reserve absorbs losses before the CF grows and
+  contributions resume only once CF = 0. A pool with a reserve therefore has no CF to attribute,
+  and its reserve stays a separate decision.
+- **Formula** (exact; no rounding, because the whole amount moves):
+  - `CF` = `cf_close` of the last posted `pool_v1` run.
+  - The run chain must be continuous: `cf_open(1) = 0` and `cf_open(k) = cf_close(k−1)`.
+  - Every stored v1 run must recompute to its recorded figures.
+  - **Responsible** = the allocations with weighted participation > 0 in the posted v1 runs that
+    changed the CF.
+  - If exactly one allocation is responsible, it receives `loss_amount = CF`. Otherwise the
+    transition **aborts** (`ambiguous_attribution`). Nothing is pro-rated or guessed, and
+    investors who joined later are never charged.
+- **Effect on v2.** The first v2 line of the responsible allocation opens at
+  `loss_open = loss_amount`, and every other allocation opens at 0. The v2 chain check, the
+  settlement check (`loss_expired`) and the settlement view all use the transition amount as the
+  opening balance until a v2 line exists.
+- **Records.** The transition is recorded forward-only in `legacy_loss_transitions` and
+  `legacy_loss_transition_lines`, both append-only. The record holds the source run, source CF,
+  source reserve (= 0), formula, evidence JSON, history digest, approval reference, approving
+  admin and timestamp. An audit row `pool.legacy_transition` is written without credentials.
+  **No ledger entry is posted** (the CF is a memo), and no historical run, line or posting
+  changes. A digest is compared inside the transaction to prove this.
+- **Invariants.**
+  - *Database:* deferred commit-time triggers enforce the following. Σ lines = source CF =
+    the source run's `cf_close`, and that run is the last posted v1 run. The ledger reserve = 0.
+    Each line matches its allocation, investment and user. The pool is now `investment_v2`. No
+    v2 run predates the transition. `UNIQUE(pool)` and `UNIQUE(key)` make it run once.
+  - *Integrity checker:* re-verifies the reconciliation.
+  - *Idempotency:* the transition key doubles as the HTTP `Idempotency-Key`. Replaying the same
+    key returns the stored record, and a different key is refused.
+
+In the current dev database, `MOMO-BTC` has a legacy CF of **15.174414**. It comes from a single
+posted v1 run (`2b8860bf…`) whose only participant was allocation `fc433842…` (investment
+`2373327b…`), and its reserve is 0. That evidence was verified independently against raw ledger
+postings and rehearsed on a clone. **By founder decision, the transition has not been applied to
+dev**: the pool stays `pool_v1`/`transition_required` until the runbook is executed there.
 
 ## 8. Concurrency and idempotency
 

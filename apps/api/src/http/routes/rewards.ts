@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { withTransaction } from "../../db/pool.js";
+import { badRequest } from "../../lib/errors.js";
 import { runIdempotent, validateIdempotencyKey } from "../../services/idempotency.js";
 import {
   assignProductToPool,
@@ -11,6 +12,7 @@ import {
 } from "../../rewards/pools.js";
 import { calculateRunTx, cancelRun, getRun, listRuns, postRun } from "../../rewards/runs.js";
 import { poolSettlementView, setPeriodMode, settlePoolReservesTx, switchToInvestmentModel } from "../../rewards/settlement.js";
+import { transitionLegacyPool } from "../../rewards/legacy-transition.js";
 import { requireAdmin, type AppDeps } from "../app.js";
 
 /** Admin-only reward pool and reward run controls. All SIMULATED. */
@@ -56,6 +58,25 @@ export const rewardAdminRoutes =
       const admin = requireAdmin(req);
       await switchToInvestmentModel(db, admin.id, (req.params as { id: string }).id, req.ip);
       return { simulated: true, pools: await listPools(db) };
+    });
+
+    // Founder-approved legacy transition (Option A). The Idempotency-Key is the transition key:
+    // a retry returns the recorded transition and never attributes the loss twice.
+    app.post("/pools/:id/legacy-transition", async (req) => {
+      const admin = requireAdmin(req);
+      const key = validateIdempotencyKey(req.headers["idempotency-key"]);
+      const body = (req.body ?? {}) as { expectedCarryForward?: unknown; approvalReference?: unknown; dryRun?: unknown };
+      if (typeof body.expectedCarryForward !== "string" || typeof body.approvalReference !== "string") {
+        throw badRequest("invalid_input", "expectedCarryForward (decimal string) and approvalReference (text) are required");
+      }
+      return transitionLegacyPool(db, {
+        poolStrategyId: (req.params as { id: string }).id,
+        expectedCarryForward: body.expectedCarryForward,
+        approvalReference: body.approvalReference.slice(0, 500),
+        transitionKey: key,
+        approvedBy: admin.id,
+        dryRun: body.dryRun === true,
+      });
     });
 
     app.post("/pools/:id/period-mode", async (req) => {

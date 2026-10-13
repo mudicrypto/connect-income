@@ -44,7 +44,17 @@ async function openingBalances(tx: Tx, allocationIds: string[]) {
       ORDER BY l.allocation_id, r.period_end DESC`,
     [allocationIds],
   );
-  return new Map(rows.map((r) => [r.allocation_id, { lossOpen: new Money(r.loss_close), reserveOpen: new Money(r.reserve_close) }]));
+  const map = new Map(rows.map((r) => [r.allocation_id, { lossOpen: new Money(r.loss_close), reserveOpen: new Money(r.reserve_close) }]));
+  // Allocations with no v2 line yet start from their legacy-transition balance, if any
+  // (legacy_loss_transition_lines; docs/rewards-accounting-v2.md §7, Option A).
+  const legacy = await tx.query<{ allocation_id: string; loss_amount: string }>(
+    "SELECT allocation_id, loss_amount::text FROM legacy_loss_transition_lines WHERE allocation_id = ANY($1::uuid[])",
+    [allocationIds],
+  );
+  for (const l of legacy.rows) {
+    if (!map.has(l.allocation_id)) map.set(l.allocation_id, { lossOpen: new Money(l.loss_amount), reserveOpen: new Money(0) });
+  }
+  return map;
 }
 
 /** Gather source data for a pool and period and run the pure calculation. */
@@ -283,6 +293,39 @@ export async function calculateRunTx(tx: Tx, actorUserId: string, raw: unknown, 
     });
     return runId;
   }
+}
+
+/**
+ * Re-derive a stored run's figures from source records (ledger trades, capital
+ * postings, allocations) with the run's own policy and opening carry-forward, and
+ * report every difference. Used by audits and the legacy transition (read-only).
+ */
+export async function recomputeRunMismatches(tx: Tx, runId: string): Promise<Array<{ field: string; stored: string; recomputed: string }>> {
+  const run = (
+    await tx.query<Record<string, string> & { period_start: Date; period_end: Date; source_trade_count: number }>(
+      `SELECT r.*, r.source_trade_count, p.reserve_ratio::text AS reserve_ratio, r.net_realised::text AS net_realised,
+              r.attributable::text AS attributable, r.cf_open::text AS cf_open, r.cf_close::text AS cf_close,
+              r.reserve_applied::text AS reserve_applied, r.eligible_profit::text AS eligible_profit,
+              r.reserve_contribution::text AS reserve_contribution, r.distributable::text AS distributable, r.total_rewards::text AS total_rewards
+         FROM reward_runs r JOIN reward_policies p ON p.id = r.policy_id WHERE r.id = $1`,
+      [runId],
+    )
+  ).rows[0];
+  if (!run) throw notFound("Reward run not found");
+  const { result } = await computePeriod(tx, run.pool_strategy_id!, run.period_start, run.period_end, run.reserve_ratio!, run.cf_open!, run.loss_model as LossModel);
+  const out: Array<{ field: string; stored: string; recomputed: string }> = RECONCILED_FIELDS.filter(
+    ([col, key]) => !new Money(String(run[col])).eq(result[key] as Money | number),
+  ).map(([col, key]) => ({
+    field: col,
+    stored: String(run[col]),
+    recomputed: String(result[key]),
+  }));
+  const lines = await tx.query<{ allocation_id: string; reward: string }>("SELECT allocation_id, reward::text FROM reward_run_lines WHERE run_id = $1", [runId]);
+  const fresh = new Map(result.lines.map((l) => [l.allocationId, l.reward]));
+  if (lines.rows.length !== result.lines.length || lines.rows.some((l) => !fresh.get(l.allocation_id)?.eq(l.reward))) {
+    out.push({ field: "lines", stored: String(lines.rows.length), recomputed: String(result.lines.length) });
+  }
+  return out;
 }
 
 const RECONCILED_FIELDS = [

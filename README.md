@@ -126,6 +126,7 @@ CLAUDE.md    engineering rules and key decisions
 | GET | `/api/admin/rewards/pools/:id/settlement` | admin: per-investment reserve and settlement states, pool state |
 | POST | `/api/admin/rewards/pools/:id/settle-reserves` | admin; requires `Idempotency-Key`; final settlement of matured investments |
 | POST | `/api/admin/rewards/pools/:id/switch-loss-model` | admin; legacy → per-investment, only if legacy balances are zero |
+| POST | `/api/admin/rewards/pools/:id/legacy-transition` `{expectedCarryForward, approvalReference, dryRun?}` | admin; `Idempotency-Key` = transition key; Option A legacy → v2 (see `docs/runbooks/legacy-pool-transition.md`) |
 | POST | `/api/admin/rewards/pools/:id/period-mode` `{periodMode}` | admin; `daily_utc` or `ad_hoc` |
 | POST | `/api/admin/rewards/runs/:id/post` · `/cancel` | admin |
 
@@ -160,11 +161,13 @@ Amounts are always decimal **strings** (e.g. `"100.50"`).
 - [x] 93 tests at the end of milestone 3 (23 new in milestone 3)
 - [x] **Milestone 3 audit** (`docs/milestone-3-audit.md`): 8 defects fixed, with regression tests, DB guards and a SQL lint; 112 tests in total
 - [x] **Milestone 3.5, economic-model refinement** (`docs/rewards-accounting-v2.md`): per-investment loss recovery, daily UTC periods, reserve ownership and approved final settlement, legacy pools preserved; 17 new tests (129 total)
+- [x] **Legacy transition, Option A** (`docs/runbooks/legacy-pool-transition.md`): attributes a v1 carry-forward to the single responsible investment; forward-only, DB-reconciled, idempotent, aborts when ambiguous; CLI `npm run transition:legacy -w apps/api`; 15 new tests (144 total). Not applied to MOMO-BTC in dev yet.
 
 ### Next
 - [ ] AI-agent strategy type (plugs into the pure decision-rule interface)
 - [ ] Strategy capital withdrawal, limit editing, force-reduce on limit drift, separate engine worker and DB role
-- [ ] Founder decision: transition of legacy pools with pool-level balances (option A / B / C in rewards-accounting-v2.md §7)
+- [ ] Apply the MOMO-BTC Option A transition to dev (runbook step 3), when the founder gives the go-ahead
+- [ ] Founder decision for legacy pools that Option A cannot handle (ambiguous attribution, or a pool-level reserve)
 - [ ] Optional performance fee (new policy version + fee-revenue account)
 - [ ] Principal-at-risk model (actually deploying principal into pools), if the founder wants it, with its own design
 - [ ] Batch approval for backlogs of closed days (each day is still reviewed); calculation-only scheduler (never posts)

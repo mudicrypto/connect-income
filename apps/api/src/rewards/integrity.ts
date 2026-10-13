@@ -49,11 +49,13 @@ export async function rewardIntegrityProblems(db: Db | Tx): Promise<string[]> {
   const chain = await db.query<{ id: string }>(`
     SELECT x.id::text FROM (
       SELECT l.id, l.loss_open, l.reserve_open,
-             LAG(l.loss_close) OVER w AS prev_loss, LAG(l.reserve_close) OVER w AS prev_reserve
+             LAG(l.loss_close) OVER w AS prev_loss, LAG(l.reserve_close) OVER w AS prev_reserve,
+             (SELECT tl.loss_amount FROM legacy_loss_transition_lines tl WHERE tl.allocation_id = l.allocation_id) AS legacy_loss
         FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
        WHERE r.status = 'posted' AND r.loss_model = 'investment_v2'
       WINDOW w AS (PARTITION BY l.allocation_id ORDER BY r.period_end)) x
-     WHERE x.loss_open <> COALESCE(x.prev_loss, 0) OR x.reserve_open <> COALESCE(x.prev_reserve, 0)`);
+     -- The first v2 line of a transitioned investment opens at its legacy-transition balance.
+     WHERE x.loss_open <> COALESCE(x.prev_loss, x.legacy_loss, 0) OR x.reserve_open <> COALESCE(x.prev_reserve, 0)`);
   for (const r of chain.rows) problems.push(`v2 reward line ${r.id}: opening balances do not continue the previous posted period`);
 
   // Settlement records the allocation's final memo balances, and nothing is posted for it afterwards.
@@ -62,7 +64,8 @@ export async function rewardIntegrityProblems(db: Db | Tx): Promise<string[]> {
       LEFT JOIN LATERAL (SELECT l.reserve_close, l.loss_close FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
                           WHERE l.allocation_id = s.allocation_id AND r.status = 'posted' AND r.loss_model = 'investment_v2'
                           ORDER BY r.period_end DESC LIMIT 1) last ON TRUE
-     WHERE s.reserve_released <> COALESCE(last.reserve_close, 0) OR s.loss_expired <> COALESCE(last.loss_close, 0)
+     WHERE s.reserve_released <> COALESCE(last.reserve_close, 0)
+        OR s.loss_expired <> COALESCE(last.loss_close, (SELECT tl.loss_amount FROM legacy_loss_transition_lines tl WHERE tl.allocation_id = s.allocation_id), 0)
         OR EXISTS (SELECT 1 FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
                     WHERE l.allocation_id = s.allocation_id AND r.status = 'posted' AND r.posted_at > s.created_at)`);
   for (const r of settleBad.rows) problems.push(`reserve settlement ${r.id} does not match the allocation's final balances`);
@@ -82,6 +85,17 @@ export async function rewardIntegrityProblems(db: Db | Tx): Promise<string[]> {
     SELECT r.id FROM reward_runs r
      WHERE r.status = 'posted' AND r.source_trade_count <> (SELECT count(*) FROM reward_run_sources s WHERE s.run_id = r.id)`);
   for (const r of sourcesBad.rows) problems.push(`reward run ${r.id}: recorded sources differ from source_trade_count`);
+
+  // Legacy transitions (Option A): each reconciles exactly to its source carry-forward, which is the
+  // pool's last posted pool_v1 cf_close, and the pool has left pool_v1.
+  const transitions = await db.query<{ id: string }>(`
+    SELECT t.id FROM legacy_loss_transitions t JOIN reward_pools rp ON rp.strategy_id = t.pool_strategy_id
+     WHERE t.source_carry_forward <> COALESCE((SELECT sum(loss_amount) FROM legacy_loss_transition_lines l WHERE l.transition_id = t.id), 0)
+        OR t.source_carry_forward <> (SELECT r.cf_close FROM reward_runs r WHERE r.id = t.source_run_id)
+        OR EXISTS (SELECT 1 FROM reward_runs r WHERE r.pool_strategy_id = t.pool_strategy_id AND r.loss_model = 'pool_v1'
+                     AND r.status = 'posted' AND r.period_end > (SELECT period_end FROM reward_runs WHERE id = t.source_run_id))
+        OR rp.loss_model <> 'investment_v2'`);
+  for (const r of transitions.rows) problems.push(`legacy transition ${r.id} does not reconcile to its source carry-forward`);
 
   // D2: a posted reward must not stay pending on an investment that already matured.
   const stranded = await db.query<{ id: string }>(`

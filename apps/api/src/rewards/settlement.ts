@@ -50,7 +50,9 @@ interface AllocRow {
 async function allocationRows(db: Db | Tx, poolId: string): Promise<AllocRow[]> {
   const { rows } = await db.query<AllocRow>(
     `SELECT pa.id AS allocation_id, pa.investment_id, pa.user_id, u.email, pa.effective_to, i.status AS inv_status,
-            last.reserve_close::text, last.loss_close::text,
+            last.reserve_close::text,
+            -- Before its first v2 line, a transitioned investment's loss balance is its legacy-transition amount.
+            COALESCE(last.loss_close, (SELECT tl.loss_amount FROM legacy_loss_transition_lines tl WHERE tl.allocation_id = pa.id))::text AS loss_close,
             COALESCE((SELECT sum(l.reward) FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
                        WHERE l.allocation_id = pa.id AND r.status = 'posted' AND l.released_entry_id IS NULL), 0)::text AS unreleased,
             rs.reserve_released::text AS settled_reserve, rs.loss_expired::text AS settled_loss

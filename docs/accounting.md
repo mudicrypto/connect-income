@@ -71,6 +71,7 @@ Fees are expensed (`strategy_fees`), not capitalised into cost basis. Slippage i
 8. No journal entry mixes strategy and non-strategy accounts, except the two reward entry types, and each of their halves balances.
 9. Customer-side solvency: per asset, `platform_sim_custody` = Σ `user_available` + Σ `user_invested` + Σ `user_reward_pending` + Σ `pool_reserve`.
 10. The reward invariants in `rewards-accounting.md` section 6, including: no posted reward left pending on a matured investment, and no pool trade dated inside a posted period that is excluded from it.
+11. Every Option A legacy transition reconciles: Σ attributed lines = its source carry-forward = the source run's `cf_close`; no `pool_v1` run was posted after it; the pool is `investment_v2`. The transition posts no journal entry, because the carry-forward is a memo and not a balance (`rewards-accounting-v2.md` §7.1).
 
 Exposed at `GET /api/admin/ledger/integrity` (admin only) and asserted in tests.
 

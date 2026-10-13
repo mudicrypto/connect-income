@@ -10,7 +10,8 @@
     "migrate": "tsx --env-file=../../.env src/db/migrate-cli.ts",
     "seed": "tsx --env-file=../../.env src/db/seed.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "transition:legacy": "tsx --env-file=../../.env src/db/legacy-transition-cli.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.3",
