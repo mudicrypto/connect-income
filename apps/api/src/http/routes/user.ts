@@ -5,6 +5,7 @@ import { validateIdempotencyKey } from "../../services/idempotency.js";
 import { createInvestment, listInvestments, listProducts } from "../../services/investments.js";
 import { listTransactions } from "../../services/transactions.js";
 import { investmentRewardStatement } from "../../rewards/runs.js";
+import { notFound } from "../../lib/errors.js";
 import { requireUser, type AppDeps } from "../app.js";
 
 export const userRoutes =
@@ -35,7 +36,10 @@ export const userRoutes =
       };
     });
 
+    // The simulated deposit faucet mints simulated USDT, so it exists only in DEV_MODE,
+    // like dev login (pre-token audit S1); otherwise it is indistinguishable from a 404.
     app.post("/deposits/simulated", { config: financialRateLimit }, async (req, reply) => {
+      if (!config.devMode) throw notFound();
       const user = requireUser(req);
       const key = validateIdempotencyKey(req.headers["idempotency-key"]);
       const body = (req.body ?? {}) as { amount?: unknown };

@@ -9,6 +9,10 @@ Everything here is SIMULATED.
 database**. On 2026-10-13 the founder decided to ship the code only and leave dev unchanged, so
 MOMO-BTC stays `pool_v1` with `transition_required = true`, and dev is still on migration 0007.
 
+**Nothing applies migrations implicitly** (pre-token audit A1). The API server and the seed refuse
+to start while a migration is pending; only `npm run migrate` applies one. A dev server started
+against dev today exits with "pending migrations: 0008…, 0009…" instead of migrating.
+
 ## What the transition does and does not do
 
 - It **writes no ledger entry and moves no money.** The legacy CF is a memo, not a balance, so
@@ -19,10 +23,17 @@ MOMO-BTC stays `pool_v1` with `transition_required = true`, and dev is still on 
   responsible allocation, giving the attributed `loss_amount`. Then it sets
   `reward_pools.loss_model = 'investment_v2'` and `transition_required = false`, and writes one
   `audit_log` row (`pool.legacy_transition`) that contains no credentials or secrets.
-- It **never edits or deletes** reward runs, run lines, ledger rows or allocations. A SHA-256
-  digest of the pool's runs, lines and strategy postings is taken before and after inside the
-  transaction, and any difference aborts it (`history_changed`). Both transition tables are
-  append-only, enforced by triggers.
+- It **never edits or deletes** reward runs, run lines, ledger rows or allocations. Both
+  transition tables are append-only, enforced by triggers.
+- **History digest.** A SHA-256 digest is taken before and after the writes, inside the
+  transaction; any difference aborts (`history_changed`). It covers the pool's runs, run lines,
+  run sources, allocations, their investments and reserve settlements, plus every journal entry
+  and posting touching the strategy's accounts. It is rendered with a fixed TimeZone and
+  DateStyle, so the stored `historyDigestSha256` can be recomputed later from any session.
+  Because the transition writes none of those tables, the before/after comparison guards against
+  a future code change. The independent check is the digest comparison against the source DB in
+  step 2. The pool row and then the strategy row are locked first, so no engine tick can commit
+  postings in between.
 - The first v2 line of a responsible allocation opens at `loss_open = loss_amount`. Every other
   allocation, including investors who joined later, opens at 0.
 
@@ -33,6 +44,8 @@ CF        = cf_close of the pool's last posted pool_v1 run
 chain     : cf_open(run 1) = 0 and cf_open(k) = cf_close(k-1) for every posted pool_v1 run
 contrib   = posted pool_v1 runs where attributable ≠ 0, cf_recovered ≠ 0,
             reserve_applied ≠ 0 or cf_close ≠ cf_open
+            (deliberately broad: a profitable period counts too, so a pool that ever had two
+             investors in a period with non-zero P&L aborts as ambiguous — fail-safe)
 responsible = allocations with weighted_allocation > 0 in the contributing runs
 If |responsible| = 1  → loss_amount(that allocation) = CF   (100%, exact)
 Otherwise             → abort `ambiguous_attribution` (founder decides; nothing is guessed)
@@ -51,12 +64,19 @@ Abort codes (HTTP 422 / CLI exit 1; nothing is written):
 | `legacy_run_not_reproducible` | A stored v1 run no longer recomputes to its recorded figures |
 | `not_legacy` / `run_pending` | The pool is already v2, or a calculated run awaits post or cancel |
 | `integrity_failed_before` / `integrity_failed_after` | `checkLedgerIntegrity()` is not clean |
-| `already_transitioned` (409) | The pool was transitioned under a different key |
+| `already_transitioned` (409) | The pool was transitioned under a different key, or a dry run was requested after execution |
+| `idempotency_key_reused` (409) | Same key with a different amount, approval reference or approver, or a key already used for another pool |
+| `invalid_approval` (400) | The approval reference is not 5–500 characters |
 
-**DB-level backstop** (migration 0008): deferred constraint triggers re-check every transition at
-COMMIT. The source run must be the last posted v1 run, `cf_close` must equal the source CF, the
-ledger reserve must be 0, Σ lines must equal the CF, each line must match its allocation,
-investment and user, the pool must be v2, and no v2 run may predate the transition. The check
+**DB-level backstop** (migrations 0008 and 0009): deferred constraint triggers re-check every
+transition at COMMIT:
+- the source run is the last posted v1 run, and its `cf_close` equals the source CF;
+- the ledger reserve is 0, and Σ lines equals the CF;
+- each line matches its allocation, investment and user, and that allocation participated in a
+  posted v1 run of the pool;
+- the pool is v2, and no v2 run exists yet.
+
+The functions run with a pinned `search_path`. The check
 applies to raw SQL inserts too. `UNIQUE(pool_strategy_id)` and `UNIQUE(transition_key)` make the
 transition run once, and concurrent attempts serialise on the pool row lock.
 
@@ -103,8 +123,9 @@ psql "$ADMIN_URL" -c "CREATE DATABASE connect_income_rehearsal TEMPLATE connect_
 DATABASE_URL=postgres://…/connect_income_rehearsal npm run migrate
 DATABASE_URL=postgres://…/connect_income_rehearsal npm run transition:legacy -w apps/api -- \
   --pool MOMO-BTC --expected 15.174414 --key momo-btc-option-a-2026-10-12 \
-  --approval "<founder approval reference>" --approver admin@connect-income.local --dry-run
-# …then without --dry-run; re-run to confirm "replayed": true; check integrity; then drop the clone
+  --approval "<founder approval reference>" --approver admin@connect-income.local
+# (no flag = DRY RUN) …then the same command with --execute; re-run to confirm "replayed": true;
+# check integrity; then drop the clone
 ```
 
 Compare a digest of the history tables between the source and the clone. They must be identical:
@@ -119,21 +140,25 @@ SELECT md5(string_agg(t, '' ORDER BY t)) FROM (
 ### 3. Apply to the target DB (requires explicit founder go-ahead)
 
 1. Take a backup with `pg_dump`.
-2. Run `npm run migrate`. This applies `0008_legacy_loss_transition.sql`. The CLI itself never
-   migrates.
-3. Run the CLI with `--dry-run` and confirm that the plan matches the step-1 evidence.
-4. Run the same command without `--dry-run`. Alternatively, use
-   `POST /api/admin/rewards/pools/:id/legacy-transition` with
-   `{expectedCarryForward, approvalReference, dryRun}` and the transition key as the
-   `Idempotency-Key` header.
+2. Run `npm run migrate`. This applies 0008 (the transition tables) and 0009 (pre-token
+   hardening). The CLI never migrates; it refuses to run while any migration is pending.
+3. Run the CLI without an action flag, which is a **dry run**, and confirm that the plan matches
+   the step-1 evidence.
+4. Run the same command with `--execute`.
+   - The CLI rejects unknown or mistyped flags such as `--dry-run=true` or `--dryrun`, and
+     rejects `--dry-run` combined with `--execute`.
+   - Alternatively, use `POST /api/admin/rewards/pools/:id/legacy-transition` with
+     `{expectedCarryForward, approvalReference, dryRun}`. Send the transition key as the
+     `Idempotency-Key` header. `dryRun` must be a JSON boolean; anything else is a 400.
 5. Verify the result:
    - the pool is `investment_v2` and `transition_required = false`;
    - Σ `legacy_loss_transition_lines.loss_amount` equals the CF;
    - `GET /api/admin/ledger/integrity` reports zero problems;
    - the history digest is unchanged.
 
-Retrying with the same key returns the recorded transition (`"replayed": true`) and writes
-nothing. A different key is refused.
+Retrying with the same key **and the same parameters** returns the recorded transition
+(`"replayed": true`) and writes nothing. A different key is refused (409), and so is the same key
+with any changed parameter.
 
 ## MOMO-BTC evidence (verified read-only on dev, 2026-10-12 / 2026-10-13)
 
@@ -150,4 +175,8 @@ nothing. A different key is refused.
 
 To apply to dev later: run step 3 with `--pool MOMO-BTC --expected 15.174414 --key
 momo-btc-option-a-2026-10-12 --approver admin@connect-income.local`, together with the founder's
-approval reference.
+approval reference. Add `--execute` only in step 3.4.
+
+The pre-token audit (2026-10-13) re-ran the rehearsal on a fresh clone of dev with the hardened
+code (0008 + 0009, dry run, then `--execute`, then a replay) and got the same result; see
+`docs/pre-token-audit.md`.

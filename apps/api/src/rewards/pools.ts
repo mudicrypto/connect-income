@@ -11,7 +11,7 @@ import { audit } from "../services/audit.js";
  * principal never moves into the pool: see docs/rewards-accounting.md.
  */
 
-const uuid = z.string().regex(/^[0-9a-f-]{36}$/i, "must be a UUID");
+const uuid = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, "must be a UUID");
 const amount = z.string().regex(/^\d{1,20}(\.\d{1,6})?$/, "must be a decimal string");
 
 export async function registerPool(db: Db, actorUserId: string, raw: unknown, ip?: string | null) {
@@ -98,7 +98,9 @@ export async function assignProductToPool(db: Db, actorUserId: string, raw: unkn
     const p = await tx.query("SELECT id FROM investment_products WHERE id = $1 FOR UPDATE", [input.productId]);
     if (!p.rowCount) throw notFound("Product not found");
     if (input.poolStrategyId) {
-      const pool = await tx.query("SELECT status FROM reward_pools WHERE strategy_id = $1", [input.poolStrategyId]);
+      // FOR SHARE: a concurrent close (FOR UPDATE) either commits first and is seen here, or
+      // waits for this assignment and then refuses to close (pre-token audit R4).
+      const pool = await tx.query("SELECT status FROM reward_pools WHERE strategy_id = $1 FOR SHARE", [input.poolStrategyId]);
       if (!pool.rows[0]) throw notFound("Pool not found");
       if (pool.rows[0].status !== "active") throw unprocessable("pool_closed", "Cannot assign a product to a closed pool");
     }
@@ -153,6 +155,16 @@ export async function listPolicies(db: Db) {
        FROM reward_policies ORDER BY version DESC`,
   );
   return rows;
+}
+
+/** Lock (FOR UPDATE) the pool the product is currently assigned to, if any. */
+export async function lockAssignedPool(tx: Tx, productId: string): Promise<void> {
+  await tx.query(
+    `SELECT 1 FROM reward_pools WHERE strategy_id = (
+       SELECT a.pool_strategy_id FROM product_pool_assignments a WHERE a.product_id = $1 ORDER BY a.id DESC LIMIT 1)
+     FOR UPDATE`,
+    [productId],
+  );
 }
 
 /**

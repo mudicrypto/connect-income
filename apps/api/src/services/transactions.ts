@@ -1,3 +1,4 @@
+import { badRequest } from "../lib/errors.js";
 import type { Db } from "../db/pool.js";
 import { format } from "../lib/money.js";
 
@@ -26,7 +27,12 @@ export async function listTransactions(
   opts: { limit?: number; before?: string } = {},
 ): Promise<{ items: TransactionView[]; nextCursor: string | null }> {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
-  const before = opts.before && /^\d+$/.test(opts.before) ? opts.before : null;
+  // A posting-id cursor: digits only and within BIGINT range; anything else is a 400, not a 500
+  // (and not silently the first page).
+  if (opts.before !== undefined && opts.before !== "" && !/^\d{1,18}$/.test(opts.before)) {
+    throw badRequest("invalid_cursor", "before must be a transaction cursor returned by this API");
+  }
+  const before = opts.before ? opts.before : null;
   const { rows } = await db.query<{
     id: string;
     entry_id: string;

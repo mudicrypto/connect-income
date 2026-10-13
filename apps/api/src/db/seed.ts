@@ -6,7 +6,7 @@ import { advanceMarket, latestTick } from "../market/market.js";
 import { runEngine } from "../strategy/engine.js";
 import { allocateCapital, createStrategy } from "../strategy/strategies.js";
 import { assignProductToPool, registerPool } from "../rewards/pools.js";
-import { migrate } from "./migrate.js";
+import { assertSchemaCurrent } from "./migrate.js";
 import { createPool, withTransaction } from "./pool.js";
 
 /**
@@ -66,7 +66,7 @@ const ADMIN_EMAIL = "admin@connect-income.local";
 const config = loadConfig();
 const db = createPool(config.databaseUrl);
 try {
-  await migrate(db, console.log);
+  await assertSchemaCurrent(db); // never migrates implicitly; run `npm run migrate` first
   await withTransaction(db, async (tx) => {
     for (const p of PRODUCTS) {
       await tx.query(

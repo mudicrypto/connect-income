@@ -75,6 +75,24 @@ Fees are expensed (`strategy_fees`), not capitalised into cost basis. Slippage i
 
 Exposed at `GET /api/admin/ledger/integrity` (admin only) and asserted in tests.
 
+**Enforced by the database since migration 0009** (pre-token audit), in addition to the checks above:
+- **Entry shapes:** each posting's (entry type, account purpose, direction) must be listed in
+  `ledger_entry_rules`:
+  - deposit: custody Dr / available Cr;
+  - investment open: available → invested; maturity: invested → available;
+  - capital allocation: strategy cash Dr / capital Cr;
+  - trade: within the strategy's cash, position, fees, gain and loss accounts;
+  - reward distribution: distributions Dr, strategy cash Cr, custody Dr, pending Cr, reserve Cr;
+  - reserve release: reserve Dr, custody Cr, strategy cash Dr, distributions Cr;
+  - reward release: pending → available; reserve settlement: reserve → available.
+
+  So, for example, nothing but a deposit, maturity, release or settlement can credit
+  `user_available`.
+- **One strategy per entry:** an entry touches the accounts of at most one strategy.
+- **Scale:** posting amounts respect `assets.scale`.
+- **Running balances:** posting ids are drawn after the account lock, so each account's
+  `balance_after` is monotonic in id order even under concurrency.
+
 ## Idempotency
 - Client operations: `Idempotency-Key` header bound to (user, operation, request hash); replay returns the stored response; reusing a key with a different body → 422.
 - Journal entries: unique deterministic keys, e.g. `simulated_deposit:<user>:<key>`, `investment:<id>:open`, `investment:<id>:mature`, `strategy_capital:<strategy>:<key>`, `strategy_trade:<strategy>:<tick>:<n>`.

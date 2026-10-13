@@ -66,6 +66,11 @@ async function computePeriod(
   reserveRatio: string,
   cfOpen: string,
   model: LossModel,
+  /**
+   * Re-derivation of a HISTORICAL run: use the opening balances the run itself recorded
+   * (v1 reserve_open; v2 per-line loss_open/reserve_open) instead of today's balances.
+   */
+  historical?: { reserveOpen: string; lines: Map<string, { lossOpen: Money; reserveOpen: Money }> },
 ): Promise<PoolPeriodInputs> {
   const meta = await tx.query<{ quote_asset: string; s_us: string; e_us: string }>(
     `SELECT i.quote_asset, ${us("$2::timestamptz")} AS s_us, ${us("$3::timestamptz")} AS e_us
@@ -118,7 +123,7 @@ async function computePeriod(
   );
 
   if (model === "investment_v2") {
-    const opening = await openingBalances(tx, allocs.rows.map((a) => a.id));
+    const opening = historical?.lines ?? (await openingBalances(tx, allocs.rows.map((a) => a.id)));
     const resultV2 = calculateRewardsV2({
       trades: trades.rows.map((t) => ({ realisedPnl: new Money(t.realised_pnl), fee: new Money(t.fee) })),
       capitalIntegral: capInt,
@@ -147,7 +152,7 @@ async function computePeriod(
       overlapUs: new Money(a.overlap_us),
     })),
     cfOpen: new Money(cfOpen),
-    reserveOpen: new Money(reserve.rows[0]!.balance),
+    reserveOpen: new Money(historical?.reserveOpen ?? reserve.rows[0]!.balance),
     reserveRatio: new Money(reserveRatio),
     scale: asset.scale,
   });
@@ -165,7 +170,7 @@ async function lastPosted(tx: Tx, poolId: string) {
 
 const calculateSchema = z
   .object({
-    poolStrategyId: z.string().regex(/^[0-9a-f-]{36}$/i),
+    poolStrategyId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
     // Optional: defaults to the database clock, so client clock skew cannot matter.
     periodEnd: z.string().datetime({ offset: true }).optional(),
   })
@@ -312,7 +317,25 @@ export async function recomputeRunMismatches(tx: Tx, runId: string): Promise<Arr
     )
   ).rows[0];
   if (!run) throw notFound("Reward run not found");
-  const { result } = await computePeriod(tx, run.pool_strategy_id!, run.period_start, run.period_end, run.reserve_ratio!, run.cf_open!, run.loss_model as LossModel);
+  // Opening balances as the run recorded them, so any past run (not only the latest) reproduces.
+  const stored = await tx.query<{ allocation_id: string; loss_open: string | null; reserve_open: string | null }>(
+    "SELECT allocation_id, loss_open::text, reserve_open::text FROM reward_run_lines WHERE run_id = $1",
+    [runId],
+  );
+  const historical = {
+    reserveOpen: String(run.reserve_open),
+    lines: new Map(stored.rows.map((l) => [l.allocation_id, { lossOpen: new Money(l.loss_open ?? 0), reserveOpen: new Money(l.reserve_open ?? 0) }])),
+  };
+  const { result } = await computePeriod(
+    tx,
+    run.pool_strategy_id!,
+    run.period_start,
+    run.period_end,
+    run.reserve_ratio!,
+    run.cf_open!,
+    run.loss_model as LossModel,
+    historical,
+  );
   const out: Array<{ field: string; stored: string; recomputed: string }> = RECONCILED_FIELDS.filter(
     ([col, key]) => !new Money(String(run[col])).eq(result[key] as Money | number),
   ).map(([col, key]) => ({
@@ -328,8 +351,18 @@ export async function recomputeRunMismatches(tx: Tx, runId: string): Promise<Arr
   return out;
 }
 
+// Every stored figure of the run is reconciled at post, not only the amounts paid, so a
+// posted run never carries a stale input (e.g. a capital integral changed with R = 0; audit R7).
 const RECONCILED_FIELDS = [
   ["source_trade_count", "sourceTradeCount"],
+  ["gross_gains", "grossGains"],
+  ["gross_losses", "grossLosses"],
+  ["fees", "fees"],
+  ["capital_integral", "capitalIntegral"],
+  ["allocation_integral", "allocationIntegral"],
+  ["customer_fraction", "customerFraction"],
+  ["cf_open", "cfOpen"],
+  ["reserve_open", "reserveOpen"],
   ["net_realised", "netRealised"],
   ["attributable", "attributable"],
   ["cf_close", "cfClose"],
@@ -353,7 +386,7 @@ export async function postRun(
   /** TEST ONLY: called just before the run is marked posted; throwing simulates a crash mid-post. */
   faultInjector?: () => void,
 ) {
-  if (!/^[0-9a-f-]{36}$/i.test(runId)) throw notFound("Reward run not found");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) throw notFound("Reward run not found");
   try {
     return await withTransaction(db, async (tx) => {
       const run = (
@@ -442,6 +475,21 @@ export async function postRun(
       const eligible = new Money(run.eligible_profit!);
       const reserveApplied = new Money(run.reserve_applied!);
       const reserveContribution = new Money(run.reserve_contribution!);
+
+      // Lock every account this transaction will post to, in ONE batch in id order (rule 22's
+      // last step). Posting several entries would otherwise lock customer accounts in data
+      // order and could deadlock with settlement or the maturity sweep (pre-token audit R1).
+      const recipients = await tx.query<{ user_id: string; matured: boolean }>(
+        `SELECT l.user_id, bool_or(i.status = 'matured') AS matured FROM reward_run_lines l JOIN investments i ON i.id = l.investment_id
+          WHERE l.run_id = $1 AND l.reward > 0 GROUP BY l.user_id`,
+        [runId],
+      );
+      const toLock = [strategy.cash, strategy.distributions, reserveAcct, custody];
+      for (const r of recipients.rows) {
+        toLock.push(await ensureAccount(tx, "user_reward_pending", asset, { userId: r.user_id }));
+        if (r.matured) toLock.push((await ensureUserAccounts(tx, r.user_id, asset)).available);
+      }
+      await lockAccounts(tx, toLock);
 
       let distributionEntryId: string | null = null;
       if (eligible.gt(0)) {
@@ -555,7 +603,7 @@ export async function postRun(
 }
 
 export async function cancelRun(db: Db, actorUserId: string, runId: string, reason: unknown, ip?: string | null) {
-  if (!/^[0-9a-f-]{36}$/i.test(runId)) throw notFound("Reward run not found");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) throw notFound("Reward run not found");
   return withTransaction(db, async (tx) => {
     const r = await tx.query<{ status: string }>("SELECT status FROM reward_runs WHERE id = $1 FOR UPDATE", [runId]);
     if (!r.rows[0]) throw notFound("Reward run not found");
@@ -627,7 +675,7 @@ export async function listRuns(db: Db, poolId?: string) {
 }
 
 export async function getRun(db: Db, runId: string) {
-  if (!/^[0-9a-f-]{36}$/i.test(runId)) throw notFound("Reward run not found");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) throw notFound("Reward run not found");
   const run = await db.query(`SELECT ${RUN_COLUMNS} FROM reward_runs r JOIN strategies s ON s.id = r.pool_strategy_id WHERE r.id = $1`, [runId]);
   if (!run.rows[0]) throw notFound("Reward run not found");
   const [lines, sources] = await Promise.all([
@@ -652,7 +700,7 @@ export async function getRun(db: Db, runId: string) {
 
 /** Per-investment performance statement for its owner. */
 export async function investmentRewardStatement(db: Db, userId: string, investmentId: string) {
-  if (!/^[0-9a-f-]{36}$/i.test(investmentId)) throw notFound("Investment not found");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(investmentId)) throw notFound("Investment not found");
   const inv = await db.query(
     `SELECT i.id, i.principal::text, i.status, i.start_at AS "startAt", i.maturity_at AS "maturityAt", p.name AS "productName",
             pa.amount::text AS "allocationAmount", s.code AS "poolCode", s.name AS "poolName"

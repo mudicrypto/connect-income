@@ -45,7 +45,11 @@ Inputs come from the same source as v1:
 For each allocation *i*, with its opening balances (L⁰ᵢ, V⁰ᵢ) taken from its **latest posted v2
 line**, or (0, 0) if it has none:
 
-1. **Attribution:** `nᵢ = ⌊R × Aᵢ / C⌋₆` (rounded toward −∞; 0 if C = 0). Every nᵢ has the sign of R.
+1. **Attribution:** `nᵢ = ⌊R × Aᵢ / D⌋₆` with `D = max(C, ΣⱼAⱼ)` (rounded toward −∞; 0 if C = 0).
+   Every nᵢ has the sign of R. Normally ΣA ≤ C (capacity is capped by paper capital) and D = C. The
+   `max` guarantees `|Σnᵢ| ≤ |R|` even if a race admits an allocation dated slightly before the
+   capital that backs it: customers are never attributed more profit, or more loss, than the pool
+   realised (pre-token audit R2; v1 has always capped its ratio at 1 the same way).
 2. **Loss period** (nᵢ ≤ 0), with ℓᵢ = −nᵢ:
    - reserve applied: `rᵢ = min(V⁰ᵢ, ℓᵢ)`
    - loss balance: `L¹ᵢ = L⁰ᵢ + ℓᵢ − rᵢ`
@@ -68,7 +72,7 @@ Run-level figures are sums over the run's lines:
 - distributable = total_rewards = Σrewardᵢ
 - rounding_residual = 0
 
-The attribution remainder R·A/C − Σnᵢ is ≥ 0 for profits. It is **not** customer money: it stays
+The attribution remainder R·ΣA/D − Σnᵢ is ≥ 0 for profits. It is **not** customer money: it stays
 in the pool (house) and is recorded on the run as `attribution_residual` for transparency. The
 whole recovered part Σrecᵢ also stays in the pool, exactly as in v1.
 
@@ -197,7 +201,10 @@ The runbook is `docs/runbooks/legacy-pool-transition.md`; the code is `src/rewar
   - The run chain must be continuous: `cf_open(1) = 0` and `cf_open(k) = cf_close(k−1)`.
   - Every stored v1 run must recompute to its recorded figures.
   - **Responsible** = the allocations with weighted participation > 0 in the posted v1 runs that
-    changed the CF.
+    changed the CF, or had any non-zero attribution, recovery or reserve application. This is
+    deliberately broader than "changed the CF": a profitable period shared by two investors also
+    makes the pool ambiguous, which fails safe. A narrower rule, counting only the runs since
+    the CF was last 0, is an open founder decision (pre-token audit A7).
   - If exactly one allocation is responsible, it receives `loss_amount = CF`. Otherwise the
     transition **aborts** (`ambiguous_attribution`). Nothing is pro-rated or guessed, and
     investors who joined later are never charged.
@@ -217,8 +224,12 @@ The runbook is `docs/runbooks/legacy-pool-transition.md`; the code is `src/rewar
     Each line matches its allocation, investment and user. The pool is now `investment_v2`. No
     v2 run predates the transition. `UNIQUE(pool)` and `UNIQUE(key)` make it run once.
   - *Integrity checker:* re-verifies the reconciliation.
-  - *Idempotency:* the transition key doubles as the HTTP `Idempotency-Key`. Replaying the same
-    key returns the stored record, and a different key is refused.
+  - *Idempotency:* the transition key doubles as the HTTP `Idempotency-Key`.
+    - Replaying the same key with the same amount, approval reference and approver returns the
+      stored record.
+    - A different key, changed parameters, a dry run after execution, or a key already used for
+      another pool are refused with 409.
+    - The CLI defaults to a dry run and executes only with `--execute`.
 
 In the current dev database, `MOMO-BTC` has a legacy CF of **15.174414**. It comes from a single
 posted v1 run (`2b8860bf…`) whose only participant was allocation `fc433842…` (investment

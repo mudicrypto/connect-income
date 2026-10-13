@@ -98,13 +98,14 @@ export const strategyRoutes =
       if (typeof ticks !== "number" || !Number.isInteger(ticks) || ticks < 1 || ticks > 1000) {
         throw badRequest("invalid_ticks", "ticks must be an integer between 1 and 1000");
       }
+      // The audit row commits with the ticks, once: a replayed request writes nothing.
       const result = await withTransaction(db, (tx) =>
-        runIdempotent(tx, { userId: admin.id, key, operation: "market_advance", request: { ticks } }, async () => ({
-          statusCode: 201,
-          body: { simulated: true, advanced: await advanceMarketTx(tx, ticks) },
-        })),
+        runIdempotent(tx, { userId: admin.id, key, operation: "market_advance", request: { ticks } }, async () => {
+          const advanced = await advanceMarketTx(tx, ticks);
+          await audit(tx, { actorUserId: admin.id, action: "market.advance", details: { ticks }, ip: req.ip });
+          return { statusCode: 201, body: { simulated: true, advanced } };
+        }),
       );
-      await audit(db, { actorUserId: admin.id, action: "market.advance", details: { ticks }, ip: req.ip });
       reply.header("Idempotent-Replayed", String(result.replayed));
       return reply.status(result.statusCode).send(result.body);
     });

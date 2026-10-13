@@ -214,12 +214,14 @@ export function calculateRewardsV2(input: CalcInputV2): CalcResultV2 {
 
   const participating = input.allocations.filter((a) => a.overlapUs.gt(0));
   const allocationIntegral = participating.reduce<MoneyT>((s, a) => s.plus(a.amount.times(a.overlapUs)), ZERO);
+  // D = max(C, ΣA): customers are never attributed more than the pool realised (v2 spec §3.1).
+  const D = Money.max(C, allocationIntegral);
 
   const lines: CalcLineV2[] = participating.map((a) => {
     if (a.lossOpen.lt(0) || a.reserveOpen.lt(0)) throw new Error("opening loss and reserve balances cannot be negative");
     const weighted = a.amount.times(a.overlapUs);
     // 1. Attribution, rounded toward -infinity (never favours payout).
-    const n = C.gt(0) ? floorTo(netRealised.times(weighted).div(C), q) : ZERO;
+    const n = C.gt(0) ? floorTo(netRealised.times(weighted).div(D), q) : ZERO;
     let lossRecovered = ZERO;
     let reserveApplied = ZERO;
     let eligible = ZERO;
@@ -255,7 +257,7 @@ export function calculateRewardsV2(input: CalcInputV2): CalcResultV2 {
   let ratio = C.gt(0) ? allocationIntegral.div(C) : ZERO;
   if (ratio.gt(1)) ratio = new Money(1);
   const attributable = sum((l) => l.attributable);
-  const exactCustomerShare = C.gt(0) ? netRealised.times(allocationIntegral).div(C) : ZERO;
+  const exactCustomerShare = C.gt(0) ? netRealised.times(allocationIntegral).div(D) : ZERO;
   const totalRewards = sum((l) => l.reward);
   return {
     sourceTradeCount: input.trades.length,

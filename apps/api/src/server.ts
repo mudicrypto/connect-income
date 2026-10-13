@@ -1,5 +1,5 @@
 import { loadConfig } from "./config.js";
-import { migrate } from "./db/migrate.js";
+import { assertSchemaCurrent } from "./db/migrate.js";
 import { createPool } from "./db/pool.js";
 import { buildApp } from "./http/app.js";
 import { advanceMarket } from "./market/market.js";
@@ -8,7 +8,8 @@ import { runEngine } from "./strategy/engine.js";
 
 const config = loadConfig();
 const db = createPool(config.databaseUrl);
-await migrate(db, (m) => console.log(`[migrate] ${m}`));
+// Never migrate implicitly: a pending migration (e.g. 0008) is applied only by `npm run migrate`.
+await assertSchemaCurrent(db);
 
 const app = await buildApp({ db, config }, { logger: true });
 

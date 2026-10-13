@@ -86,7 +86,7 @@ export async function createStrategy(db: Db, actorUserId: string, raw: unknown, 
 }
 
 async function lockStrategy(tx: Tx, id: string) {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw notFound("Strategy not found");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw notFound("Strategy not found");
   const { rows } = await tx.query<{ id: string; status: string; instrument_id: string; max_allocation: string; last_tick_seq: string }>(
     "SELECT id, status, instrument_id, max_allocation::text, last_tick_seq::text FROM strategies WHERE id = $1 FOR UPDATE",
     [id],
@@ -164,9 +164,11 @@ export async function allocateCapital(
               `(currently allocated ${format(allocated, asset.scale)})`,
           );
         }
-        const { entryId } = await postEntry(tx, {
+        // The journal key is scoped like runIdempotent (per actor), and an existing entry is never
+        // reused: shifting risk baselines without a posting would fake a loss (pre-token audit C1).
+        const { entryId, created } = await postEntry(tx, {
           entryType: "strategy_capital_allocation",
-          idempotencyKey: `strategy_capital:${s.id}:${input.idempotencyKey}`,
+          idempotencyKey: `strategy_capital:${s.id}:${input.actorUserId}:${input.idempotencyKey}`,
           description: "Simulated paper capital allocated to strategy",
           initiatedBy: input.actorUserId,
           referenceType: "strategy",
@@ -177,6 +179,7 @@ export async function allocateCapital(
             { accountId: accounts.capital, direction: "credit", amount },
           ],
         });
+        if (!created) throw conflict("idempotency_key_reused", "This allocation key was already used; nothing was allocated");
         // Capital flows must not look like P&L to the risk monitors.
         await tx.query(
           `UPDATE strategies SET last_equity = last_equity + $2, peak_equity = peak_equity + $2,
@@ -370,7 +373,7 @@ export async function listStrategies(db: Db) {
 }
 
 export async function getStrategyDetail(db: Db, id: string) {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw notFound("Strategy not found");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw notFound("Strategy not found");
   const metrics = (await strategyMetrics(db, [id]))[0];
   if (!metrics) throw notFound("Strategy not found");
   const { equityRaw: _e, ...strategy } = metrics;

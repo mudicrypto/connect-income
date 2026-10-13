@@ -1,7 +1,7 @@
 import { withTransaction, type Db, type Tx } from "../db/pool.js";
 import { AppError, conflict, notFound, unprocessable } from "../lib/errors.js";
 import { format, fromDb, Money } from "../lib/money.js";
-import { ensureAccount, ensureUserAccounts } from "../ledger/accounts.js";
+import { ensureAccount, ensureUserAccounts, lockAccounts } from "../ledger/accounts.js";
 import { postEntry } from "../ledger/ledger.js";
 import { audit } from "../services/audit.js";
 
@@ -86,8 +86,17 @@ function classify(
 }
 
 async function poolFacts(db: Db | Tx, poolId: string) {
-  const { rows } = await db.query<{ loss_model: string; status: string; posted_end: Date | null; pending: boolean; reserve: string; legacy_reserve: string }>(
+  const { rows } = await db.query<{
+    loss_model: string;
+    status: string;
+    asset: string;
+    posted_end: Date | null;
+    pending: boolean;
+    reserve: string;
+    legacy_reserve: string;
+  }>(
     `SELECT rp.loss_model, rp.status,
+            (SELECT i.quote_asset FROM strategies s JOIN market_instruments i ON i.id = s.instrument_id WHERE s.id = rp.strategy_id) AS asset,
             (SELECT max(period_end) FROM reward_runs WHERE pool_strategy_id = rp.strategy_id AND status = 'posted') AS posted_end,
             EXISTS (SELECT 1 FROM reward_runs WHERE pool_strategy_id = rp.strategy_id AND status = 'calculated') AS pending,
             COALESCE((SELECT sum(balance) FROM ledger_accounts WHERE owner_strategy_id = rp.strategy_id AND purpose = 'pool_reserve'), 0)::text AS reserve,
@@ -142,7 +151,7 @@ export async function poolSettlementView(db: Db | Tx, poolId: string) {
  * record its expired loss balance. One transaction, after reconciliation.
  */
 export async function settlePoolReserves(db: Db, actorUserId: string, poolId: string, ip?: string | null) {
-  if (!/^[0-9a-f-]{36}$/i.test(poolId)) throw notFound("Pool not found");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(poolId)) throw notFound("Pool not found");
   return withTransaction(db, (tx) => settlePoolReservesTx(tx, actorUserId, poolId, ip));
 }
 
@@ -171,14 +180,18 @@ export async function settlePoolReservesTx(tx: Tx, actorUserId: string, poolId: 
   }
 
   const settleable = rows.filter((a) => classify(a, pool).state === "settleable");
-  const reserveAcct = await ensureAccount(tx, "pool_reserve", "USDT", { strategyId: poolId });
+  const reserveAcct = await ensureAccount(tx, "pool_reserve", pool.asset, { strategyId: poolId });
+  // All account locks in one batch, in id order (pre-token audit R1).
+  const toLock = [reserveAcct];
+  for (const a of settleable) if (fromDb(a.reserve_close).gt(0)) toLock.push((await ensureUserAccounts(tx, a.user_id, pool.asset)).available);
+  await lockAccounts(tx, toLock);
   const settled: Array<{ allocationId: string; reserveReleased: string; lossExpired: string; entryId: string | null }> = [];
   for (const a of settleable) {
     const reserve = fromDb(a.reserve_close);
     const loss = fromDb(a.loss_close);
     let entryId: string | null = null;
     if (reserve.gt(0)) {
-      const user = await ensureUserAccounts(tx, a.user_id, "USDT");
+      const user = await ensureUserAccounts(tx, a.user_id, pool.asset);
       entryId = (
         await postEntry(tx, {
           entryType: "reserve_settlement",
@@ -219,7 +232,7 @@ export async function settlePoolReservesTx(tx: Tx, actorUserId: string, poolId: 
  * otherwise this is a founder decision (rewards-accounting-v2.md §7).
  */
 export async function switchToInvestmentModel(db: Db, actorUserId: string, poolId: string, ip?: string | null) {
-  if (!/^[0-9a-f-]{36}$/i.test(poolId)) throw notFound("Pool not found");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(poolId)) throw notFound("Pool not found");
   return withTransaction(db, async (tx) => {
     const p = await tx.query<{ loss_model: string }>("SELECT loss_model FROM reward_pools WHERE strategy_id = $1 FOR UPDATE", [poolId]);
     if (!p.rows[0]) throw notFound("Pool not found");

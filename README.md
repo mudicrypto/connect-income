@@ -26,14 +26,14 @@ docker compose up -d
 #   psql -U postgres -c "CREATE DATABASE connect_income_test OWNER connect;"
 
 # 4. Create schema and synthetic seed data (investment products + dev admin)
-npm run migrate
+npm run migrate   # the ONLY step that applies migrations; the server and seed refuse to run while one is pending
 npm run seed      # prints the dev admin password once (note it down); creates 3 demo strategies and 2 reward pools
 ```
 
 ## Run
 
 ```bash
-npm run dev
+npm run dev       # refuses to start if a migration is pending: run `npm run migrate` explicitly first
 ```
 
 - Web app: http://127.0.0.1:5173
@@ -41,7 +41,7 @@ npm run dev
 
 ### Try it
 1. Open http://127.0.0.1:5173 and click **One-click login as Demo User**, or register a new account.
-2. On the **Dashboard**, make a simulated deposit (e.g. `1000`).
+2. On the **Dashboard**, make a simulated deposit (e.g. `1000`). The deposit faucet exists only with `DEV_MODE=true`.
 3. Go to **New investment**, pick a product, enter an amount, accept the disclosure and click **Invest**.
    - Select **Dev: 5-minute term** to see maturity happen. The background sweep returns the principal about 5 minutes later.
 4. **Investments** lists active and matured positions with their exact maturity dates.
@@ -162,12 +162,14 @@ Amounts are always decimal **strings** (e.g. `"100.50"`).
 - [x] **Milestone 3 audit** (`docs/milestone-3-audit.md`): 8 defects fixed, with regression tests, DB guards and a SQL lint; 112 tests in total
 - [x] **Milestone 3.5, economic-model refinement** (`docs/rewards-accounting-v2.md`): per-investment loss recovery, daily UTC periods, reserve ownership and approved final settlement, legacy pools preserved; 17 new tests (129 total)
 - [x] **Legacy transition, Option A** (`docs/runbooks/legacy-pool-transition.md`): attributes a v1 carry-forward to the single responsible investment; forward-only, DB-reconciled, idempotent, aborts when ambiguous; CLI `npm run transition:legacy -w apps/api`; 15 new tests (144 total). Not applied to MOMO-BTC in dev yet.
+- [x] **Pre-token adversarial audit** (`docs/pre-token-audit.md`): 39 findings verified; 26 fixed with DB guards (migration 0009: entry-shape rules, single-strategy entries, account guards, scale, lock-ordered posting ids) and regression tests; no startup path migrates implicitly; legacy CLI dry-run by default; 22 new tests (166 total).
 
 ### Next
 - [ ] AI-agent strategy type (plugs into the pure decision-rule interface)
 - [ ] Strategy capital withdrawal, limit editing, force-reduce on limit drift, separate engine worker and DB role
 - [ ] Apply the MOMO-BTC Option A transition to dev (runbook step 3), when the founder gives the go-ahead
 - [ ] Founder decision for legacy pools that Option A cannot handle (ambiguous attribution, or a pool-level reserve)
+- [ ] Open founder decisions from the pre-token audit: per-investor pool caps (S2), narrower Option A attribution (A7), DB owner/app role split (L12), four-eyes approvals (A11)
 - [ ] Optional performance fee (new policy version + fee-revenue account)
 - [ ] Principal-at-risk model (actually deploying principal into pools), if the founder wants it, with its own design
 - [ ] Batch approval for backlogs of closed days (each day is still reviewed); calculation-only scheduler (never posts)

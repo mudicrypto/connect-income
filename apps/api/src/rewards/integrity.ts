@@ -5,14 +5,14 @@ import { Money } from "../lib/money.js";
 export async function rewardIntegrityProblems(db: Db | Tx): Promise<string[]> {
   const problems: string[] = [];
 
+  // Per user AND asset (an investment's asset is its pool's quote asset).
   const pending = await db.query<{ user_id: string; ledger: string; lines: string }>(`
-    SELECT a.owner_user_id AS user_id, a.balance::text AS ledger,
-           COALESCE((SELECT sum(l.reward) FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
-                      WHERE l.user_id = a.owner_user_id AND r.status = 'posted' AND l.released_entry_id IS NULL), 0)::text AS lines
-      FROM ledger_accounts a WHERE a.purpose = 'user_reward_pending'
-     GROUP BY a.id
-    HAVING a.balance <> COALESCE((SELECT sum(l.reward) FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id
-                      WHERE l.user_id = a.owner_user_id AND r.status = 'posted' AND l.released_entry_id IS NULL), 0)`);
+    SELECT x.user_id, x.ledger::text, x.lines::text FROM (
+      SELECT a.owner_user_id AS user_id, a.balance AS ledger,
+             COALESCE((SELECT sum(l.reward) FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id JOIN investments i ON i.id = l.investment_id
+                        WHERE l.user_id = a.owner_user_id AND i.asset = a.asset AND r.status = 'posted' AND l.released_entry_id IS NULL), 0) AS lines
+        FROM ledger_accounts a WHERE a.purpose = 'user_reward_pending') x
+     WHERE x.ledger <> x.lines`);
   for (const r of pending.rows) problems.push(`user ${r.user_id}: pending rewards ledger ${r.ledger} != unreleased lines ${r.lines}`);
 
   const unbacked = await db.query<{ id: string }>(`
@@ -96,6 +96,18 @@ export async function rewardIntegrityProblems(db: Db | Tx): Promise<string[]> {
                      AND r.status = 'posted' AND r.period_end > (SELECT period_end FROM reward_runs WHERE id = t.source_run_id))
         OR rp.loss_model <> 'investment_v2'`);
   for (const r of transitions.rows) problems.push(`legacy transition ${r.id} does not reconcile to its source carry-forward`);
+
+  // R2: customers are never attributed more than the pool realised (v2 spec §3.1, D = max(C, ΣA)).
+  // A profit is never over-attributed; a loss may exceed R only by the documented rounding against
+  // the investor (at most one unit of the asset scale per line).
+  const overAttributed = await db.query<{ id: string }>(`
+    SELECT r.id FROM reward_runs r
+      JOIN strategies s ON s.id = r.pool_strategy_id JOIN market_instruments mi ON mi.id = s.instrument_id JOIN assets a ON a.code = mi.quote_asset
+     WHERE r.status = 'posted' AND r.loss_model = 'investment_v2'
+       AND ((r.net_realised >= 0 AND r.attributable > r.net_realised)
+         OR (r.net_realised < 0 AND r.attributable < r.net_realised
+               - (SELECT count(*) FROM reward_run_lines l WHERE l.run_id = r.id) * power(10::numeric, -a.scale)))`);
+  for (const r of overAttributed.rows) problems.push(`reward run ${r.id}: customers attributed more than the pool's realised P&L`);
 
   // D2: a posted reward must not stay pending on an investment that already matured.
   const stranded = await db.query<{ id: string }>(`

@@ -137,7 +137,8 @@ export async function checkLedgerIntegrity(db: Db | Tx): Promise<IntegrityReport
     creditNormalTotal: r.credit_total,
   }));
   for (const r of tb.rows) {
-    if (r.debit_total !== r.credit_total) {
+    // Compare numerically: an empty sum renders as "0", a zero NUMERIC(38,18) sum as "0.000…".
+    if (!new Money(r.debit_total).eq(r.credit_total)) {
       problems.push(`trial balance for ${r.asset} does not balance: ${r.debit_total} vs ${r.credit_total}`);
     }
   }

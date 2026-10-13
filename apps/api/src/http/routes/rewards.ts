@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
+import { z } from "zod";
 import { withTransaction } from "../../db/pool.js";
-import { badRequest } from "../../lib/errors.js";
 import { runIdempotent, validateIdempotencyKey } from "../../services/idempotency.js";
 import {
   assignProductToPool,
@@ -14,6 +14,14 @@ import { calculateRunTx, cancelRun, getRun, listRuns, postRun } from "../../rewa
 import { poolSettlementView, setPeriodMode, settlePoolReservesTx, switchToInvestmentModel } from "../../rewards/settlement.js";
 import { transitionLegacyPool } from "../../rewards/legacy-transition.js";
 import { requireAdmin, type AppDeps } from "../app.js";
+
+const legacyTransitionBody = z
+  .object({
+    expectedCarryForward: z.string().regex(/^\d{1,20}(\.\d{1,18})?$/, "must be a decimal string"),
+    approvalReference: z.string().trim().min(5).max(500),
+    dryRun: z.boolean(),
+  })
+  .strict();
 
 /** Admin-only reward pool and reward run controls. All SIMULATED. */
 export const rewardAdminRoutes =
@@ -61,21 +69,19 @@ export const rewardAdminRoutes =
     });
 
     // Founder-approved legacy transition (Option A). The Idempotency-Key is the transition key:
-    // a retry returns the recorded transition and never attributes the loss twice.
+    // a retry with the same parameters returns the recorded transition; anything else is refused.
+    // dryRun must be an explicit boolean, so a malformed request can never execute.
     app.post("/pools/:id/legacy-transition", async (req) => {
       const admin = requireAdmin(req);
       const key = validateIdempotencyKey(req.headers["idempotency-key"]);
-      const body = (req.body ?? {}) as { expectedCarryForward?: unknown; approvalReference?: unknown; dryRun?: unknown };
-      if (typeof body.expectedCarryForward !== "string" || typeof body.approvalReference !== "string") {
-        throw badRequest("invalid_input", "expectedCarryForward (decimal string) and approvalReference (text) are required");
-      }
+      const body = legacyTransitionBody.parse(req.body ?? {});
       return transitionLegacyPool(db, {
         poolStrategyId: (req.params as { id: string }).id,
         expectedCarryForward: body.expectedCarryForward,
-        approvalReference: body.approvalReference.slice(0, 500),
+        approvalReference: body.approvalReference,
         transitionKey: key,
         approvedBy: admin.id,
-        dryRun: body.dryRun === true,
+        dryRun: body.dryRun,
       });
     });
 
@@ -99,7 +105,7 @@ export const rewardAdminRoutes =
 
     app.get("/runs", async (req) => {
       const q = req.query as { poolId?: string };
-      const poolId = q.poolId && /^[0-9a-f-]{36}$/i.test(q.poolId) ? q.poolId : undefined;
+      const poolId = q.poolId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(q.poolId) ? q.poolId : undefined;
       return { simulated: true, runs: await listRuns(db, poolId) };
     });
 

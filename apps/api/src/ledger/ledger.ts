@@ -50,11 +50,12 @@ export async function postEntry(tx: Tx, input: EntryInput): Promise<PostedEntry>
   if (input.postings.length < 2) throw new LedgerError("an entry needs at least two postings");
 
   const accountIds = [...new Set(input.postings.map((p) => p.accountId))];
-  const { rows: accounts } = await tx.query<{ id: string; asset: string }>(
-    "SELECT id, asset FROM ledger_accounts WHERE id = ANY($1::uuid[])",
+  const { rows: accounts } = await tx.query<{ id: string; asset: string; scale: number }>(
+    "SELECT a.id, a.asset, s.scale FROM ledger_accounts a JOIN assets s ON s.code = a.asset WHERE a.id = ANY($1::uuid[])",
     [accountIds],
   );
   const assetOf = new Map(accounts.map((a) => [a.id, a.asset]));
+  const scaleOf = new Map(accounts.map((a) => [a.id, a.scale]));
 
   const net = new Map<string, MoneyT>();
   for (const p of input.postings) {
@@ -62,6 +63,9 @@ export async function postEntry(tx: Tx, input: EntryInput): Promise<PostedEntry>
     if (!asset) throw new LedgerError(`unknown ledger account ${p.accountId}`);
     if (!Money.isDecimal(p.amount) || !p.amount.isFinite() || p.amount.lte(0)) {
       throw new LedgerError("posting amounts must be positive decimals");
+    }
+    if (p.amount.decimalPlaces() > scaleOf.get(p.accountId)!) {
+      throw new LedgerError(`posting amount ${p.amount.toFixed()} exceeds the ${asset} scale of ${scaleOf.get(p.accountId)} decimals`);
     }
     const signed = p.direction === "debit" ? p.amount : p.amount.neg();
     net.set(asset, (net.get(asset) ?? new Money(0)).plus(signed));

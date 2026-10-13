@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Db } from "./pool.js";
+import type { Db, Tx } from "./pool.js";
 
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../migrations");
 
@@ -42,4 +42,25 @@ export async function migrate(db: Db, log: (msg: string) => void = () => {}): Pr
     }
   }
   return applied;
+}
+
+/** Migration files not yet recorded in schema_migrations. Read-only. */
+export async function pendingMigrations(db: Db | Tx): Promise<string[]> {
+  const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql")).sort();
+  const { rows } = await db.query<{ name: string }>("SELECT name FROM schema_migrations");
+  const done = new Set(rows.map((r) => r.name));
+  return files.filter((f) => !done.has(f));
+}
+
+/**
+ * Refuse to run against a database whose schema is behind the code. The API
+ * server and the seed never migrate implicitly (pre-token audit A1): applying
+ * a migration is always the explicit `npm run migrate` step.
+ */
+export async function assertSchemaCurrent(db: Db): Promise<void> {
+  const exists = await db.query("SELECT to_regclass('schema_migrations') AS t");
+  const pending = exists.rows[0].t ? await pendingMigrations(db) : ["(no schema_migrations table)"];
+  if (pending.length) {
+    throw new Error(`database schema is behind the code; pending migrations: ${pending.join(", ")}. Run \`npm run migrate\` explicitly first.`);
+  }
 }

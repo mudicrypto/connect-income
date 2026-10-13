@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { withTransaction, type Db, type Tx } from "../db/pool.js";
-import { AppError, conflict, notFound } from "../lib/errors.js";
+import { AppError, badRequest, conflict, notFound } from "../lib/errors.js";
 import { Money, type Money as MoneyT } from "../lib/money.js";
 import { checkLedgerIntegrity } from "../ledger/integrity.js";
 import { audit } from "../services/audit.js";
@@ -116,20 +116,33 @@ export function attributeLegacyLoss(input: {
 // Evidence gathering and execution
 // ---------------------------------------------------------------------------
 
-async function historyDigest(tx: Tx, poolId: string): Promise<string> {
-  const runs = await tx.query<{ t: string }>("SELECT r::text AS t FROM reward_runs r WHERE r.pool_strategy_id = $1 ORDER BY r.id", [poolId]);
-  const lines = await tx.query<{ t: string }>(
+/**
+ * SHA-256 over every historical record the transition must not change: the pool's runs, run
+ * lines and run sources, its allocations and their investments, its reserve settlements, and
+ * every journal entry and posting touching the strategy's (or pool's) accounts. Rendered with a
+ * fixed TimeZone/DateStyle so the stored digest can be recomputed later from any session.
+ */
+export async function historyDigest(tx: Tx, poolId: string): Promise<string> {
+  await tx.query("SET LOCAL TimeZone = 'UTC'");
+  await tx.query("SET LOCAL DateStyle = 'ISO, YMD'");
+  await tx.query("SET LOCAL IntervalStyle = 'iso_8601'");
+  await tx.query("SET LOCAL extra_float_digits = 3");
+  const parts: string[] = [];
+  for (const sql of [
+    "SELECT r::text AS t FROM reward_runs r WHERE r.pool_strategy_id = $1 ORDER BY r.id",
     "SELECT l::text AS t FROM reward_run_lines l JOIN reward_runs r ON r.id = l.run_id WHERE r.pool_strategy_id = $1 ORDER BY l.id",
-    [poolId],
-  );
-  const postings = await tx.query<{ t: string }>(
-    `SELECT p::text AS t FROM ledger_postings p JOIN ledger_accounts a ON a.id = p.account_id
-      WHERE a.owner_strategy_id = $1 ORDER BY p.id`,
-    [poolId],
-  );
-  return createHash("sha256")
-    .update([...runs.rows, ...lines.rows, ...postings.rows].map((r) => r.t).join("\n"))
-    .digest("hex");
+    "SELECT s::text AS t FROM reward_run_sources s JOIN reward_runs r ON r.id = s.run_id WHERE r.pool_strategy_id = $1 ORDER BY s.run_id, s.trade_id",
+    "SELECT a::text AS t FROM pool_allocations a WHERE a.pool_strategy_id = $1 ORDER BY a.id",
+    "SELECT i::text AS t FROM investments i WHERE i.id IN (SELECT investment_id FROM pool_allocations WHERE pool_strategy_id = $1) ORDER BY i.id",
+    "SELECT x::text AS t FROM reserve_settlements x WHERE x.pool_strategy_id = $1 ORDER BY x.id",
+    `SELECT e::text AS t FROM journal_entries e WHERE e.id IN (SELECT p.entry_id FROM ledger_postings p JOIN ledger_accounts a ON a.id = p.account_id
+       WHERE a.owner_strategy_id = $1) ORDER BY e.id`,
+    `SELECT p::text AS t FROM ledger_postings p WHERE p.entry_id IN (SELECT q.entry_id FROM ledger_postings q JOIN ledger_accounts a ON a.id = q.account_id
+       WHERE a.owner_strategy_id = $1) ORDER BY p.id`,
+  ]) {
+    parts.push((await tx.query<{ t: string }>(sql, [poolId])).rows.map((r) => r.t).join("\n"));
+  }
+  return createHash("sha256").update(parts.join("\n--\n")).digest("hex");
 }
 
 export async function gatherEvidence(tx: Tx, poolId: string) {
@@ -180,9 +193,12 @@ export interface TransitionInput {
 }
 
 export async function transitionLegacyPool(db: Db, input: TransitionInput) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.poolStrategyId)) throw notFound("Pool not found");
   if (!/^\d{1,20}(\.\d{1,18})?$/.test(input.expectedCarryForward)) {
     throw new TransitionAbort("invalid_amount", "expectedCarryForward must be a decimal string");
   }
+  const approval = input.approvalReference.trim();
+  if (approval.length < 5 || approval.length > 500) throw badRequest("invalid_approval", "approvalReference must be 5-500 characters");
   const expected = new Money(input.expectedCarryForward);
   const integrity = input.integrityCheck ?? (async (tx: Tx) => (await checkLedgerIntegrity(tx)).problems);
 
@@ -193,18 +209,30 @@ export async function transitionLegacyPool(db: Db, input: TransitionInput) {
       [input.poolStrategyId],
     );
     if (!pool.rows[0]) throw notFound("Pool not found");
+    // Then the strategy (rule 22 order), so no engine tick or capital allocation can commit
+    // new strategy postings while the history digest is taken.
+    await tx.query("SELECT 1 FROM strategies WHERE id = $1 FOR UPDATE", [input.poolStrategyId]);
 
-    // Idempotency: a retry with the same key returns the recorded transition, never a second one.
-    const existing = await tx.query<{ id: string; transition_key: string }>(
-      "SELECT id, transition_key FROM legacy_loss_transitions WHERE pool_strategy_id = $1",
+    // Idempotency: a retry with the same key AND the same parameters returns the recorded
+    // transition; a different key, different parameters or a dry run are refused (409).
+    const existing = await tx.query<{ id: string; transition_key: string; source_carry_forward: string; approval_reference: string; approved_by: string }>(
+      `SELECT id, transition_key, source_carry_forward::text, approval_reference, approved_by
+         FROM legacy_loss_transitions WHERE pool_strategy_id = $1`,
       [input.poolStrategyId],
     );
-    if (existing.rows[0]) {
-      if (existing.rows[0].transition_key !== input.transitionKey) {
+    const prior = existing.rows[0];
+    if (prior) {
+      if (prior.transition_key !== input.transitionKey) {
         throw conflict("already_transitioned", "This pool has already been transitioned under a different key");
       }
-      return { replayed: true, dryRun: false, ...(await describeTransition(tx, existing.rows[0].id)) };
+      if (input.dryRun) throw conflict("already_transitioned", "This pool has already been transitioned; a dry run is no longer possible");
+      if (!new Money(prior.source_carry_forward).eq(expected) || prior.approval_reference !== approval || prior.approved_by !== input.approvedBy) {
+        throw conflict("idempotency_key_reused", "This transition key was used with different parameters; nothing was changed");
+      }
+      return { replayed: true, dryRun: false, ...(await describeTransition(tx, prior.id)) };
     }
+    const keyUsed = await tx.query("SELECT 1 FROM legacy_loss_transitions WHERE transition_key = $1", [input.transitionKey]);
+    if (keyUsed.rowCount) throw conflict("idempotency_key_reused", "This transition key was already used for another pool");
     if (pool.rows[0].loss_model !== "pool_v1") throw new TransitionAbort("not_legacy", "Pool is not on the legacy pool_v1 model");
     const pending = await tx.query("SELECT 1 FROM reward_runs WHERE pool_strategy_id = $1 AND status = 'calculated'", [input.poolStrategyId]);
     if (pending.rowCount) throw new TransitionAbort("run_pending", "Cancel or post the pending run first");
@@ -235,23 +263,29 @@ export async function transitionLegacyPool(db: Db, input: TransitionInput) {
     };
     if (input.dryRun) return { replayed: false, dryRun: true, plan, evidence, method: TRANSITION_METHOD, formula: TRANSITION_FORMULA };
 
-    const t = await tx.query<{ id: string; created_at: Date }>(
-      `INSERT INTO legacy_loss_transitions (pool_strategy_id, transition_key, method, source_run_id, source_carry_forward, source_reserve,
-         formula, evidence, approval_reference, approved_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, created_at`,
-      [
-        input.poolStrategyId,
-        input.transitionKey,
-        TRANSITION_METHOD,
-        plan.sourceRunId,
-        plan.sourceCarryForward,
-        ev.reserve.toFixed(),
-        TRANSITION_FORMULA,
-        JSON.stringify(evidence),
-        input.approvalReference,
-        input.approvedBy,
-      ],
-    );
+    const t = await tx
+      .query<{ id: string; created_at: Date }>(
+        `INSERT INTO legacy_loss_transitions (pool_strategy_id, transition_key, method, source_run_id, source_carry_forward, source_reserve,
+           formula, evidence, approval_reference, approved_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, created_at`,
+        [
+          input.poolStrategyId,
+          input.transitionKey,
+          TRANSITION_METHOD,
+          plan.sourceRunId,
+          plan.sourceCarryForward,
+          ev.reserve.toFixed(),
+          TRANSITION_FORMULA,
+          JSON.stringify(evidence),
+          approval,
+          input.approvedBy,
+        ],
+      )
+      .catch((err: { code?: string }) => {
+        // A concurrent transition of another pool took the same key first.
+        if (err.code === "23505") throw conflict("idempotency_key_reused", "This transition key was already used for another pool");
+        throw err;
+      });
     const transitionId = t.rows[0]!.id;
     for (const l of plan.lines) {
       await tx.query(
@@ -282,7 +316,7 @@ export async function transitionLegacyPool(db: Db, input: TransitionInput) {
         sourceRunId: plan.sourceRunId,
         sourceCarryForward: plan.sourceCarryForward,
         lines: plan.lines.map((l) => ({ investmentId: l.investmentId, lossAmount: l.lossAmount })),
-        approvalReference: input.approvalReference,
+        approvalReference: approval,
         historyDigestSha256: digestBefore,
       },
     });

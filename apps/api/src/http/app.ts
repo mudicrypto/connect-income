@@ -26,7 +26,7 @@ export interface AppDeps {
 }
 
 export async function buildApp(deps: AppDeps, opts: { logger?: boolean } = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 64 * 1024, trustProxy: false });
+  const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 64 * 1024, trustProxy: deps.config.trustProxy });
 
   // JSON only. Removing the text/plain parser means a cross-site "simple"
   // form/text POST can never reach a handler (CSRF defence alongside
@@ -49,6 +49,12 @@ export async function buildApp(deps: AppDeps, opts: { logger?: boolean } = {}): 
     if (err instanceof ZodError) {
       const message = err.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
       return reply.status(400).send({ error: { code: "validation_error", message } });
+    }
+    // Malformed client input that only the database noticed (bad uuid/number/date syntax,
+    // out-of-range values): a client error, never a 500. The database text is not echoed.
+    const pgCode = (err as { code?: string }).code;
+    if (pgCode && ["22P02", "22003", "22007", "22008"].includes(pgCode)) {
+      return reply.status(400).send({ error: { code: "invalid_input", message: "Malformed identifier or value" } });
     }
     const status = (err as { statusCode?: number }).statusCode;
     if (status && status >= 400 && status < 500) {

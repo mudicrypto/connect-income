@@ -1,6 +1,7 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api, fmt, fmtDate, newKey, type Balance, type Transaction } from "../api";
+import { useAuth } from "../auth";
 import { useLoad } from "../useLoad";
 import { TransactionTable } from "./Transactions";
 
@@ -12,6 +13,8 @@ interface Dashboard {
 }
 
 export function DashboardPage() {
+  // The simulated deposit faucet exists only in DEV_MODE (the API returns 404 otherwise).
+  const { devMode } = useAuth();
   const { data, error, reload } = useLoad(() => api<Dashboard>("/api/dashboard"));
   const usdt = data?.balances.find((b) => b.asset === "USDT");
 
@@ -30,7 +33,7 @@ export function DashboardPage() {
         when the investment matures. They are never guaranteed.
       </p>
       <div className="grid2">
-        <SimulatedDeposit onDone={reload} />
+        {devMode && <SimulatedDeposit onDone={reload} />}
         <div className="card">
           <h3>Investments</h3>
           <p>

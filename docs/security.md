@@ -16,7 +16,9 @@ Simulation only. No real funds, private keys, exchange API keys or mainnet contr
 
 ## Request hardening
 - JSON-only bodies (`text/plain` parser removed) plus SameSite=Strict, which together block CSRF.
-- 64 KB body limit; rate limits on auth (20/min) and financial endpoints (60/min).
+- 64 KB body limit; rate limits on auth (20/min) and financial endpoints (60/min), keyed by client IP. The API trusts `X-Forwarded-For` only from loopback proxies (`TRUST_PROXY`, default `loopback`; the Vite dev proxy forwards it), so clients behind the proxy no longer share one limit.
+- The simulated deposit faucet, like dev login, exists only with `DEV_MODE=true` (404 otherwise).
+- Malformed identifiers and values are 400s: strict UUID checks, and Postgres input-syntax errors map to `invalid_input` without echoing database text.
 - Amounts must be decimal strings matching a strict regex and respect asset scale. Floats are rejected.
 - Errors return a stable `{error:{code,message}}`; internal errors are logged, not leaked.
 
@@ -24,6 +26,8 @@ Simulation only. No real funds, private keys, exchange API keys or mainnet contr
 - Ledger, journal and audit log are append-only (DB triggers block UPDATE/DELETE/TRUNCATE).
 - Balance cache can only change through postings; overdrafts are blocked by a CHECK constraint.
 - Investment terms are immutable; matured investments are final.
+- Migration 0009 (pre-token audit): every posting must match `ledger_entry_rules` (entry type × account purpose × direction) and the asset scale. An entry may touch at most one strategy's accounts. New accounts start at zero with the category and normal balance of their purpose; `allow_negative`, `code` and `category` are immutable. Every function has a pinned `search_path`.
+- No application startup path applies migrations (`assertSchemaCurrent`); only `npm run migrate` does.
 
 ## Strategy engine (milestone 2)
 - All strategy endpoints live under `/api/admin/*`. A plugin-level `preHandler` requires the admin role, so every route returns 401 or 403 otherwise. The tests check every route for both cases.
@@ -56,4 +60,7 @@ Simulation only. No real funds, private keys, exchange API keys or mainnet contr
 - No CSP/security headers (add `@fastify/helmet` when serving the built UI from the API).
 - Rate limiter is in-memory (single instance only).
 - The strategy engine runs inside the API process with the same DB role. A dedicated least-privilege role is planned.
+- The runtime DB role owns the tables, so compromised app credentials could disable triggers. Before any real deployment, run migrations as an owner role and the app as a role without DDL (pre-token audit L12).
+- Registration reveals whether an email exists (409). The cookie has no `__Host-` prefix and `COOKIE_SECURE` defaults to false (pre-token audit S8).
+- No per-investor cap on pool participation (pre-token audit S2, founder decision).
 - Admin actions are single-approver. Four-eyes approval for kill-switch release and large allocations is planned.

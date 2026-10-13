@@ -6,7 +6,7 @@ import { ensureUserAccounts, getAsset, lockAccounts } from "../ledger/accounts.j
 import { postEntry } from "../ledger/ledger.js";
 import { audit } from "./audit.js";
 import { runIdempotent } from "./idempotency.js";
-import { allocateInvestmentToPool, productPools } from "../rewards/pools.js";
+import { allocateInvestmentToPool, lockAssignedPool, productPools } from "../rewards/pools.js";
 import { releaseInvestmentRewards } from "../rewards/runs.js";
 
 export interface ProductView {
@@ -172,7 +172,7 @@ export async function createInvestment(
     ip?: string | null;
   },
 ) {
-  if (typeof input.productId !== "string" || !/^[0-9a-f-]{36}$/i.test(input.productId)) {
+  if (typeof input.productId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.productId)) {
     throw badRequest("invalid_product", "productId must be a UUID");
   }
   const productId = input.productId;
@@ -207,6 +207,9 @@ export async function createInvestment(
           throw unprocessable("above_maximum", `Maximum investment is ${format(product.max_amount, asset.scale)} ${asset.code}`);
         }
 
+        // Lock order pool -> accounts, as in reward posting and settlement (rule 22): taking the
+        // account locks first could deadlock with a run posting into this pool (pre-token audit R1).
+        await lockAssignedPool(tx, product.id);
         const accounts = await ensureUserAccounts(tx, input.userId, asset.code);
         const balances = await lockAccounts(tx, [accounts.available, accounts.invested]);
         const available = fromDb(balances.get(accounts.available));
@@ -297,6 +300,9 @@ export async function settleMaturedInvestments(
       const inv = locked.rows[0];
       if (!inv) return false; // already settled or being settled by another worker
       const accounts = await ensureUserAccounts(tx, inv.user_id, inv.asset);
+      // Maturity may post twice (principal, then reward release): take every account lock of
+      // this user and asset in one batch, in id order (pre-token audit R1).
+      await tx.query("SELECT id FROM ledger_accounts WHERE owner_user_id = $1 AND asset = $2 ORDER BY id FOR UPDATE", [inv.user_id, inv.asset]);
       const amount = fromDb(inv.principal);
       const { entryId } = await postEntry(tx, {
         entryType: "investment_mature",
